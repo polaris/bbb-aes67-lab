@@ -1,0 +1,5 @@
+1. AES67-Strom empfangen. Der AVIO sendet Audio als RTP-Multicast. RTP ist das Transportprotokoll für Echtzeit-Medien. Ein eigener C++-Empfänger auf dem Board würde RTP-Pakete lesen und die Abspielzeit aus dem PTP-Takt ableiten. Das ist der Kern deines späteren Stacks. Dazu gehört SAP/SDP: Darüber kündigen AES67-Geräte ihre Ströme mit Adresse und Format an.
+2. AES67-Strom senden. Das Board erzeugt z. B. einen Sinuston und schickt ihn an den AVIO. Am PC hörst du ihn dann über USB. Das ist der direkte Funktionsnachweis.
+3. Verkehr analysieren. Port Mirroring am Switch einrichten und PTP und RTP in Wireshark ansehen. Das hilft sehr beim Verständnis vor dem eigenen Code.
+4. Aufräumen. ptp4l mit Konfigurationsdatei als Dienst starten lassen und meta-bbb mit Anleitung auf GitHub stellen. Das ist ein vorzeigbares Portfolio-Stück.
+5. Später: der Weg zum Mikrocontroller. Das BeagleBone dient als Linux-Referenz. Der eigentliche Produktschritt wäre ein STM32-Board mit Ethernet und Hardware-PTP unter Zephyr.
