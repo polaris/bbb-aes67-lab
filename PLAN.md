@@ -1,0 +1,214 @@
+# Plan: SWUpdate auf dem BeagleBone Black
+
+Ziel: Das Board bekommt neue Images über das Netzwerk statt über eine neu beschriebene SD-Karte. Am Ende liegt ein A/B-System im eMMC. Ein fehlerhaftes Update fällt automatisch auf die alte Version zurück.
+
+Der Weg führt über die SD-Karte. Dort kann nichts kaputtgehen, was sich nicht mit einer frisch beschriebenen Karte beheben lässt. Erst wenn alles läuft, wandert das System ins eMMC.
+
+## Spielregeln
+
+- Arbeit im Git-Branch `swupdate`. Der Stand auf `master` mit PTP bleibt lauffähig.
+- Eigener Layer `meta-bbb-swupdate` neben `meta-bbb`. So bleibt sichtbar, was nur für SWUpdate nötig ist.
+- Jeder Schritt endet mit „Prüfen“. Erst weitergehen, wenn die Prüfung klappt.
+- Jeder Schritt hat Lernfragen. Beantworte sie schriftlich in eigenen Worten, bevor du weitergehst. Kannst du eine nicht beantworten, ist das der Hinweis, wo du nachlesen solltest.
+- Nach jedem Schritt das Ergebnis in `docs/anleitung.md` übernehmen (siehe letzter Abschnitt). Nicht alles erst am Ende.
+- Rettungsweg immer bereithalten: eine SD-Karte mit dem bisherigen Image, deren Boot-Partition `MLO` und `u-boot.img` enthält. Damit startet das Board mit **S2** auch dann, wenn das U-Boot im eMMC kaputt ist.
+
+## Schritt 0: Konzepte auffrischen (ohne Board)
+
+Lesen in der SWUpdate-Dokumentation (sbabic.github.io/swupdate): „SWUpdate: software update for embedded system“, „Update strategies“, „sw-description“, „Handlers“, „Bootloader interface“, „meta-swupdate“.
+
+Lernfragen:
+1. Was ist der Unterschied zwischen „single copy“ (mit Rescue-System) und „double copy“ (A/B)? Welche Vor- und Nachteile hat jede Variante bei 4 GB eMMC?
+2. Wie ist eine `.swu`-Datei aufgebaut, und warum muss `sw-description` darin an erster Stelle stehen?
+3. Was macht ein Handler? Nenne drei Handler und wofür man sie nimmt.
+4. Was sind „software collections“ und was bewirkt `swupdate -e stable,copy2`?
+5. Wozu braucht SWUpdate Zugriff auf die U-Boot-Umgebung, und welche Bibliothek nutzt es dafür?
+6. Was verhindert, dass ein halb geschriebenes Update gebootet wird?
+
+## Schritt 1: Layer einbinden, SWUpdate ins Image
+
+Aufgaben:
+1. Branch `swupdate` anlegen.
+2. `meta-swupdate` (Branch `wrynose`) nach `../layers/` klonen und einbinden. Abhängigkeiten in `meta-swupdate/conf/layer.conf` nachsehen (`LAYERDEPENDS`) und fehlende Layer ergänzen. `meta-oe` ist schon da.
+3. Layer `meta-bbb-swupdate` mit `bitbake-layers create-layer` anlegen, ins Repo legen und einbinden.
+4. `swupdate` ins Image aufnehmen und bauen. Karte beschreiben, booten.
+5. Nachsehen, wie SWUpdate konfiguriert ist: `bitbake -c menuconfig swupdate`. Merken, welche Handler aktiv sind. Die Konfiguration später über eine eigene `defconfig` im `.bbappend` festlegen, nicht nur im Menü.
+
+Prüfen: Auf dem Board läuft `swupdate -h`. Die Liste der Handler steht in der Ausgabe von `swupdate -v -i /dev/null` oder in den Startmeldungen.
+
+Lernfragen:
+1. Wo landet die SWUpdate-Konfiguration im Build, und wie überschreibst du sie dauerhaft?
+2. Welche Pakete hat `meta-swupdate` zusätzlich ins Image gezogen und warum?
+
+## Schritt 2: Das erste Update – nur eine Datei
+
+Noch keine Partitionen. Ein Update, das eine einzige Datei installiert, zeigt das `.swu`-Format ohne Risiko.
+
+Aufgaben:
+1. In `meta-bbb-swupdate` ein Rezept `update-hello.bb` anlegen, das `inherit swupdate` nutzt und eine `sw-description` mit einem `files`-Eintrag enthält. Die Datei `hello.txt` soll nach `/home/root/hello.txt`.
+2. `bitbake update-hello` und die `.swu` unter `tmp/deploy/images/beaglebone-yocto/` suchen.
+3. Mit `cpio -it < update-hello-*.swu` den Inhalt ansehen.
+4. Per `scp` aufs Board kopieren (Dropbear ist im Image) und mit `swupdate -v -i /tmp/update-hello.swu` installieren.
+5. Danach mit einem `sha256`-Fehler in `sw-description` absichtlich ein kaputtes Update bauen und die Fehlermeldung lesen.
+
+Prüfen: `hello.txt` liegt auf dem Board. Das kaputte Update wird abgelehnt, die Datei bleibt unverändert.
+
+Lernfragen:
+1. Was erzeugt die Klasse `swupdate` automatisch in `sw-description` (z. B. Prüfsummen)?
+2. Was steht in den Feldern `name`, `version` und `hardware-compatibility`, und was passiert, wenn `hardware-compatibility` nicht passt?
+
+## Schritt 3: Updates über das Netzwerk
+
+Aufgaben:
+1. `swupdate-www` ins Image aufnehmen. Den Dienst so starten, dass der Webserver auf Port 8080 läuft.
+2. Im Browser am PC `http://<Board-IP>:8080` öffnen und `update-hello.swu` hochladen.
+3. Herausfinden, wie der Dienst gestartet wird (Init-Skript oder systemd-Unit) und wo die Startoptionen stehen.
+
+Prüfen: Das Update läuft über den Browser, die Fortschrittsanzeige erreicht 100 %, die Datei liegt auf dem Board.
+
+Lernfragen:
+1. Welche Startoption aktiviert den Webserver, und welche weiteren Wege gibt es, ein Update einzuspielen (Stichworte: `-d` Download, Suricatta/hawkBit)?
+2. Was ist `swupdate-progress` und wofür wäre es nützlich?
+
+## Schritt 4: U-Boot-Umgebung aus Linux lesen und schreiben
+
+SWUpdate schaltet beim A/B-Update die Bootpartition über eine Variable in der U-Boot-Umgebung um. Dafür muss Linux wissen, wo U-Boot sie speichert.
+
+Aufgaben:
+1. In U-Boot (Leertaste beim Start) `env info` und `printenv` ausführen. Einmal `saveenv` ausführen und notieren, wohin gespeichert wird (FAT-Datei oder Rohbereich im MMC, welches Gerät). Mit dem neuen U-Boot ist `saveenv` erlaubt, die Warnung in Abschnitt 9 der Anleitung gilt nur für das alte.
+2. Passende `/etc/fw_env.config` schreiben und über ein `.bbappend` für `libubootenv` ins Image bringen.
+3. Auf dem Board `fw_printenv` und `fw_setenv test 123` ausführen, neu starten und in U-Boot `printenv test` prüfen.
+
+Prüfen: Eine Variable, die Linux setzt, ist in U-Boot sichtbar und umgekehrt.
+
+Lernfragen:
+1. Was passiert, wenn `fw_env.config` auf die falsche Stelle zeigt? Warum ist das gefährlich?
+2. Warum speichert man die Umgebung oft doppelt (redundante Umgebung)?
+
+## Schritt 5: A/B-Layout auf der SD-Karte
+
+Ziel-Layout (gilt später genauso im eMMC):
+
+| Partition | Inhalt | Ändert sich beim Update? |
+| --- | --- | --- |
+| 1 `boot` (FAT) | `MLO`, `u-boot.img`, `boot.scr`, ggf. `uboot.env` (siehe Schritt 4) | nein |
+| 2 `rootfsA` (ext4) | Linux A mit Kernel und Device Tree in `/boot` | ja, wenn B läuft |
+| 3 `rootfsB` (ext4) | Linux B, ebenso | ja, wenn A läuft |
+| 4 `data` (ext4) | Daten, die ein Update überleben | nein |
+
+Die Boot-Partition gehört weder zu A noch zu B. SWUpdate tauscht nur Kernel und Root-Dateisystem, nicht das U-Boot. Ein kaputtes U-Boot würde weder A noch B starten. Dagegen hilft nur der Rettungsweg mit S2 und SD-Karte.
+
+Aufgaben:
+1. Eigene `.wks`-Datei im Layer anlegen: Boot-Partition (FAT, mit `MLO` und `u-boot.img` als Rettungsweg), `rootfsA`, `rootfsB`, `data`. Mit `WKS_FILE` aktivieren.
+2. Kernel und Device Tree in das Root-Dateisystem legen (`/boot` im rootfs), damit ein Update von rootfs auch den Kernel mitnimmt.
+3. Statt `extlinux.conf` ein U-Boot-Bootskript `boot.scr` erzeugen. Es liest eine Variable (z. B. `rootpart`), lädt Kernel und Device Tree von dieser Partition und setzt `root=` passend. Klären, in welcher Reihenfolge U-Boot `extlinux.conf` und `boot.scr` sucht, und sicherstellen, dass das Skript gefunden wird.
+4. `data` als `/data` einhängen. Hier landen später Dinge, die ein Update überleben sollen (z. B. `ptp4l`-Konfiguration).
+
+Prüfen: Bootet mit `rootpart=2`. Nach `fw_setenv rootpart 3` und Neustart läuft das System von B. `cat /proc/cmdline` und `mount` zeigen es.
+
+Lernfragen:
+1. Warum gehört der Kernel ins rootfs und nicht in die gemeinsame Boot-Partition?
+2. Was liegt in `/data`, und was darf dort nicht liegen?
+
+## Schritt 6: Echtes A/B-Update
+
+Aufgaben:
+1. Rezept `update-image.bb` mit `inherit swupdate`. `SWUPDATE_IMAGES` enthält `core-image-minimal` als `.ext4.gz`.
+2. `sw-description` mit zwei Collections `copy1` und `copy2`. Jede schreibt das Image auf die jeweils andere Partition und setzt im Abschnitt `bootenv` die Variable `rootpart`.
+3. Kleines Skript auf dem Board, das aus `/proc/cmdline` die laufende Partition ermittelt und `swupdate` mit dem richtigen `-e` aufruft. Für den Webserver das gleiche über die Startoptionen des Dienstes lösen.
+4. Eine sichtbare Versionsangabe ins Image bringen, z. B. eine Datei `/etc/bbb-version` mit Build-Datum.
+5. Update einspielen, neu starten, Version prüfen. Danach zurück auf die andere Seite.
+
+Prüfen: Zweimal hintereinander ein Update. Das Board wechselt A → B → A, die Version steigt jedes Mal. Das laufende System wird nie überschrieben.
+
+Lernfragen:
+1. Was passiert, wenn während des Schreibens der Strom ausfällt? Probiere es aus.
+2. Warum setzt SWUpdate die Umgebungsvariablen erst am Ende des Updates?
+
+## Schritt 7: Automatischer Rückfall (Bootzähler)
+
+Aufgaben:
+1. Prüfen, ob das U-Boot einen Bootzähler hat (`CONFIG_BOOTCOUNT_LIMIT`, Speicherort `CONFIG_BOOTCOUNT_ENV`). Falls nicht: Konfigurations-Fragment für U-Boot im Layer, neu bauen, `MLO` und `u-boot.img` wie in Abschnitt 10 der Anleitung ins eMMC kopieren. Vorher prüfen, dass der Rettungsweg mit S2 funktioniert.
+2. `bootlimit`, `upgrade_available` und `altbootcmd` so setzen, dass nach drei misslungenen Starts die alte Partition bootet.
+3. Nach einem erfolgreichen Start bestätigt ein Dienst auf dem Board das Update (`upgrade_available=0`, `bootcount=0`). Überlegen, was „erfolgreich“ heißt, z. B. `ptp4l` erreicht `SLAVE`.
+4. Absichtlich ein kaputtes Update bauen (z. B. Kernel mit `init=/bin/false`) und einspielen.
+
+Prüfen: Das kaputte Update startet nicht, nach dem Bootlimit läuft wieder die alte Version. Ein gutes Update wird bestätigt und bleibt.
+
+Lernfragen:
+1. Wer zählt beim Start hoch, und wer setzt zurück?
+2. Warum muss der Watchdog aktiv sein, damit das auch bei einem hängenden Kernel funktioniert?
+
+## Schritt 8: Schreibgeschütztes Root-Dateisystem mit Overlay für /etc
+
+Bei einem A/B-System soll das laufende Root-Dateisystem unverändert bleiben. Sonst gehen Änderungen beim Wechsel auf die andere Seite verloren, oder A und B unterscheiden sich unbemerkt. Erst angehen, wenn Schritt 6 und 7 stabil laufen.
+
+Aufgaben:
+1. `read-only-rootfs` zu `IMAGE_FEATURES` hinzufügen. Booten und notieren, was nicht mehr geht: Dienste, die nach `/etc` oder `/var` schreiben wollen, SSH-Hostschlüssel, `fw_setenv` (Sperrdatei), SWUpdate selbst.
+2. `overlayfs-etc` zu `IMAGE_FEATURES` hinzufügen, sodass `/etc` als Overlay auf der `data`-Partition liegt. Die Variablen `OVERLAYFS_ETC_*` in der Klasse `overlayfs-etc` von OE-Core nachlesen und setzen.
+3. Prüfen, ob die Bestätigung aus Schritt 7 noch funktioniert. Sie schreibt in die U-Boot-Umgebung, nicht ins Root-Dateisystem.
+4. Die typische Falle selbst erleben: Auf dem Board `/etc/ptp4l.conf` ändern. Dann ein Update mit einer neuen `ptp4l.conf` einspielen. Ergebnis: Die geänderte Datei im Overlay verdeckt die neue aus dem Update.
+5. Eine Strategie dafür festlegen und umsetzen, z. B. Gerätekonfiguration nicht in `/etc`, sondern nach `/data/config`, oder ein Post-Install-Skript in `sw-description`, das bestimmte Dateien aus dem Overlay entfernt.
+
+Prüfen: `touch /usr/test` scheitert mit „Read-only file system“. `mount` zeigt ein Overlay auf `/etc`. Eine Änderung in `/etc` überlebt Neustart und Wechsel von A nach B. Der SSH-Hostschlüssel bleibt nach einem Neustart gleich.
+
+Lernfragen:
+1. Was liegt im `lowerdir`, im `upperdir` und im `workdir`?
+2. Warum verdeckt eine geänderte Datei im Overlay die neue Version aus dem Update, und welche Strategien gibt es dagegen?
+3. Wann reicht ein Overlay auf `/etc` nicht aus? Was würde dm-verity zusätzlich leisten?
+
+## Schritt 9: Signierte Updates
+
+Aufgaben:
+1. RSA-Schlüsselpaar erzeugen. Privaten Schlüssel nicht ins Repo legen (`.gitignore`).
+2. `SWUPDATE_SIGNING` und den Schlüssel im Build setzen, `CONFIG_SIGNED_IMAGES` in der SWUpdate-Konfiguration aktivieren, öffentlichen Schlüssel ins Image bringen und SWUpdate mit `-k` starten.
+3. Ein unsigniertes und ein mit falschem Schlüssel signiertes Update versuchen.
+
+Prüfen: Nur das richtig signierte Update wird installiert.
+
+Lernfragen:
+1. Was genau wird signiert: die ganze `.swu` oder nur `sw-description`? Warum reicht das?
+2. Wie würdest du einen Schlüssel austauschen, ohne Geräte im Feld zu verlieren?
+
+## Schritt 10: Umzug ins eMMC
+
+Erst wenn Schritt 1 bis 9 auf der SD-Karte laufen.
+
+Aufgaben:
+1. Größe des eMMC prüfen (`lsblk`, meist 4 GB). Partitionsgrößen in der `.wks` anpassen.
+2. Gerätenamen unterscheiden: SD-Karte `mmcblk0` / U-Boot `mmc 0`, eMMC `mmcblk1` / U-Boot `mmc 1`. Bootskript, `fw_env.config`, `sw-description` und das Gerät für das `/etc`-Overlay so schreiben, dass sie das Gerät nicht fest eintragen, oder ein eigenes Image für das eMMC bauen.
+3. Von der SD-Karte booten, das `.wic` per `scp` aufs Board kopieren und mit `bmaptool` oder `dd` auf `/dev/mmcblk1` schreiben. Dabei werden auch `MLO` und `u-boot.img` im eMMC ersetzt. Vorher sicherstellen, dass die neue Boot-Partition sie enthält.
+4. SD-Karte entfernen und starten.
+
+Prüfen: Board startet ohne Karte aus dem eMMC, ein A/B-Update über den Browser klappt, der Rückfall aus Schritt 7 klappt.
+
+Lernfragen:
+1. In welcher Reihenfolge sucht U-Boot jetzt nach Bootmedien, und was passiert, wenn eine alte SD-Karte steckt?
+2. Wie würdest du ein Gerät ohne Karte und ohne Netzwerk retten?
+
+## Schritt 11 (optional): Weiterführend
+
+- Pre- und Post-Install-Skripte (`scripts` in `sw-description`), z. B. Konfiguration nach `/data` migrieren.
+- hawkBit-Server in Docker und SWUpdate im Suricatta-Modus: Das Board holt Updates selbst ab.
+- Delta-Updates (`delta`-Handler) und Vergleich der Größe.
+- Verschlüsselte Images.
+- dm-verity: Das Root-Dateisystem wird beim Lesen gegen eine signierte Prüfsumme geprüft. Passt zu Schritt 9.
+
+## Übernahme in die Anleitung
+
+Nach jedem Schritt einen Abschnitt in `docs/anleitung.md` ergänzen, fortlaufend ab Abschnitt 16. Stil wie bisher: kurze Sätze, Befehle in Codeblöcken, gemessene Werte und Stolperstellen festhalten. Was nur dem Lernen dient (Lernfragen, Fehlversuche ohne Erkenntnis), bleibt hier.
+
+| Schritt | Abschnitt in der Anleitung |
+| --- | --- |
+| 1 | 16. SWUpdate einbinden |
+| 2 | 17. Erstes Update mit einer Datei |
+| 3 | 18. Updates über den Browser |
+| 4 | 19. U-Boot-Umgebung aus Linux |
+| 5 | 20. A/B-Layout |
+| 6 | 21. A/B-Update |
+| 7 | 22. Rückfall mit Bootzähler |
+| 8 | 23. Schreibgeschütztes Root-Dateisystem mit Overlay |
+| 9 | 24. Signierte Updates |
+| 10 | 25. Umzug ins eMMC |
+
+Nach Schritt 10 außerdem Abschnitt 7 anpassen (Booten ohne Karte) und das Ziel oben in der Anleitung ergänzen.
