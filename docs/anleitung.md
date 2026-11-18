@@ -181,10 +181,11 @@ Von der SD-Karte booten:
 
 1. PuTTY zuerst öffnen, damit die Boot-Meldungen sichtbar sind.
 2. Board stromlos machen und Karte einstecken.
-3. Taster **S2** gedrückt halten. Er sitzt oben links neben dem microSD-Slot, beschriftet „S2“. S1 (RESET) und S3 (POWER) sitzen unten links.
-4. Strom über ein **5-V-Netzteil** anschließen (Hohlstecker 5,5/2,1 mm, Plus innen, mind. 1 A) und S2 loslassen, sobald die USR-LEDs leuchten.
+3. Strom über ein **5-V-Netzteil** anschließen (Hohlstecker 5,5/2,1 mm, Plus innen, mind. 1 A).
 
-Wichtig: Bei Versorgung über Mini-USB am PC startete das Board mit S2 nicht von der Karte, PuTTY blieb leer. Mit Netzteil klappte es sofort.
+Mit aktualisiertem U-Boot im internen Speicher (Abschnitt 10) startet das Board ohne Taster von der Karte.
+
+Nur beim Erststart mit dem alten U-Boot von 2014: Vor dem Einschalten Taster **S2** gedrückt halten und loslassen, sobald die USR-LEDs leuchten. S2 sitzt oben links neben dem microSD-Slot. S1 (RESET) und S3 (POWER) sitzen unten links. Bei Versorgung über Mini-USB am PC startete das Board mit S2 nicht von der Karte, PuTTY blieb leer. Mit Netzteil klappte es sofort.
 
 Während des Starts flackert USR1 (SD-Karte). Flackert USR3, liest das Board den internen Speicher. Am Prompt mit `root` ohne Passwort anmelden. Die Begrüßung lautet „Poky (Yocto Project Reference Distro) 6.0.x beaglebone-yocto“.
 
