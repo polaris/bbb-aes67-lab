@@ -2,7 +2,7 @@
 
 Nov 3, 2026 · @Jan Deinhard
 
-Ziel: ein `core-image-minimal` mit Yocto 6.0 „Wrynose“ (LTS bis April 2030) für die Maschine `beaglebone-yocto`, gebaut unter WSL2 und gebootet von microSD.
+Ziel: ein eigenes Image `bbb-image` auf Basis von `core-image-minimal` mit Yocto 6.0 „Wrynose“ (LTS bis April 2030) für die Maschine `beaglebone-yocto`, gebaut unter WSL2 und gebootet von microSD.
 
 Seit 6.0 richtet man Builds mit `bitbake-setup` ein. Das alte Sammel-Repository `poky` ist abgelöst. Die Maschine `beaglebone-yocto` liegt weiterhin im Layer `meta-yocto-bsp` und braucht keinen Hersteller-Layer.
 
@@ -110,14 +110,52 @@ Optional: vorgebaute Zwischenergebnisse aus dem Netz nutzen (Shared-State-Mirror
 bitbake-config-build enable-fragment core/yocto/sstate-mirror-cdn
 ```
 
-Zusätzliche Pakete und Begrenzung der Parallelität in `conf/local.conf` eintragen. Weniger Threads verhindern, dass WSL der Speicher ausgeht:
+Eigene Dateien liegen in einem Git-Repository, hier `~/src/bbb-aes67-lab`. Die eigenen Einstellungen kommen dort in `conf/local.inc`. Die `conf/local.conf` im Build-Verzeichnis bindet sie nur per `require` ein. So stehen die Einstellungen unter Versionskontrolle:
 
 ```bash
-cat >> conf/local.conf <<'EOF'
-IMAGE_INSTALL:append = " ethtool"
+mkdir -p ~/src/bbb-aes67-lab/conf && git -C ~/src/bbb-aes67-lab init
+cat > ~/src/bbb-aes67-lab/conf/local.inc <<'EOF'
 BB_NUMBER_THREADS = "8"
 PARALLEL_MAKE = "-j 8"
+EXTRA_IMAGE_FEATURES += "ssh-server-dropbear tools-debug"
 EOF
+echo "require $HOME/src/bbb-aes67-lab/conf/local.inc" >> conf/local.conf
+```
+
+Weniger Threads verhindern, dass WSL der Speicher ausgeht. `ssh-server-dropbear` erlaubt `ssh` und `scp` aufs Board, `tools-debug` bringt Werkzeuge wie `gdb` und `strace` mit.
+
+In `local.inc` gehören nur Einstellungen für den Build-Rechner und die Entwicklung. Pakete für das Board kommen in ein eigenes Image. Per `IMAGE_INSTALL` in `local.inc` würden sie in jedem gebauten Image landen.
+
+### Eigener Layer und eigenes Image
+
+Eigene Rezepte kommen in den Layer `meta-bbb`. Er liegt ebenfalls im Repository. Unter `../layers` steht nur ein symbolischer Link darauf. So gibt es nur eine Kopie, und Änderungen im Repository wirken sofort im Build:
+
+```bash
+bitbake-layers create-layer ~/src/bbb-aes67-lab/meta-bbb
+rm -r ~/src/bbb-aes67-lab/meta-bbb/recipes-example
+ln -s ~/src/bbb-aes67-lab/meta-bbb ../layers/meta-bbb
+bitbake-layers add-layer ../layers/meta-bbb
+```
+
+Der Link liegt nicht im Repository. Auf einem neuen Rechner muss er neu angelegt werden.
+
+Image `bbb-image` auf Basis von `core-image-minimal` anlegen:
+
+```bash
+mkdir -p ~/src/bbb-aes67-lab/meta-bbb/recipes-core/images
+cat > ~/src/bbb-aes67-lab/meta-bbb/recipes-core/images/bbb-image.bb <<'EOF'
+SUMMARY = "Image für das AES67-Labor"
+require recipes-core/images/core-image-minimal.bb
+
+IMAGE_INSTALL:append = " ethtool"
+EOF
+```
+
+Prüfen, was im Image landet:
+
+```bash
+bitbake -e bbb-image | grep ^IMAGE_INSTALL=
+# IMAGE_INSTALL="packagegroup-core-boot  ethtool"
 ```
 
 ## 5. Bauen
@@ -125,7 +163,7 @@ EOF
 Der erste Build dauert je nach Rechner mehrere Stunden. Weitere Builds gehen dank Cache deutlich schneller.
 
 ```bash
-bitbake core-image-minimal
+bitbake bbb-image
 ```
 
 Ergebnis ansehen:
@@ -144,7 +182,7 @@ WSL sieht den Kartenleser nicht direkt. Deshalb das Abbild entpackt nach Windows
 # <WindowsUser> durch deinen Windows-Benutzernamen ersetzen
 # Das Abbild ist zstd-komprimiert. Die Umleitung < folgt dem symbolischen Link,
 # zstd selbst würde ihn ignorieren.
-zstd -dc < tmp/deploy/images/beaglebone-yocto/core-image-minimal-beaglebone-yocto.rootfs.wic.zst \
+zstd -dc < tmp/deploy/images/beaglebone-yocto/bbb-image-beaglebone-yocto.rootfs.wic.zst \
   > /mnt/c/Users/<WindowsUser>/Downloads/bbb.img
 ```
 
@@ -154,7 +192,7 @@ Alternative an einem nativen Linux-Rechner (Gerätenamen vorher mit `lsblk` prü
 
 ```bash
 # bmaptool entpackt .zst selbst
-sudo bmaptool copy core-image-minimal-beaglebone-yocto.rootfs.wic.zst /dev/sdX
+sudo bmaptool copy bbb-image-beaglebone-yocto.rootfs.wic.zst /dev/sdX
 ```
 
 ## 7. Booten und serielle Konsole
@@ -264,20 +302,17 @@ Im Standard-Kernel von `beaglebone-yocto` fehlt der Treiber für die Zeitstempel
 zcat /proc/config.gz | grep CPTS     # "# CONFIG_TI_CPTS is not set"
 ```
 
-Auf dem Build-PC einen eigenen Layer mit Kernel-Konfigurations-Fragment anlegen:
+Auf dem Build-PC im Layer `meta-bbb` (Abschnitt 4) ein Kernel-Konfigurations-Fragment anlegen:
 
 ```bash
-cd ~/bitbake-builds/poky-wrynose/build
-bitbake-layers create-layer ../layers/meta-bbb
-bitbake-layers add-layer ../layers/meta-bbb
-
-mkdir -p ../layers/meta-bbb/recipes-kernel/linux/files
-cat > ../layers/meta-bbb/recipes-kernel/linux/files/cpts.cfg <<'EOF'
+cd ~/src/bbb-aes67-lab/meta-bbb
+mkdir -p recipes-kernel/linux/files
+cat > recipes-kernel/linux/files/cpts.cfg <<'EOF'
 CONFIG_PTP_1588_CLOCK=y
 CONFIG_TI_CPTS=y
 EOF
 
-cat > ../layers/meta-bbb/recipes-kernel/linux/linux-yocto_%.bbappend <<'EOF'
+cat > recipes-kernel/linux/linux-yocto_%.bbappend <<'EOF'
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 SRC_URI += "file://cpts.cfg"
 EOF
@@ -288,10 +323,25 @@ EOF
 `linuxptp` (mit `ptp4l` und `phc2sys`) liegt im Layer `meta-oe` von meta-openembedded:
 
 ```bash
+cd ~/bitbake-builds/poky-wrynose/build
 git clone -b wrynose https://git.openembedded.org/meta-openembedded ../layers/meta-openembedded
 bitbake-layers add-layer ../layers/meta-openembedded/meta-oe
-echo 'IMAGE_INSTALL:append = " linuxptp"' >> conf/local.conf
-bitbake core-image-minimal
+```
+
+In `meta-bbb/recipes-core/images/bbb-image.bb` die Paketzeile erweitern:
+
+```
+IMAGE_INSTALL:append = " ethtool linuxptp"
+```
+
+`meta-bbb` hängt damit von `meta-oe` ab. In `meta-bbb/conf/layer.conf` eintragen, dann meldet BitBake gleich beim Start, wenn der Layer fehlt:
+
+```
+LAYERDEPENDS_meta-bbb = "core openembedded-layer"
+```
+
+```bash
+bitbake bbb-image
 ```
 
 Der Kernel wird dabei neu gebaut. Karte neu beschreiben und auf dem Board prüfen:
