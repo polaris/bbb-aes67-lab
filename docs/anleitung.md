@@ -397,9 +397,80 @@ Systemuhr an die PTP-Uhr koppeln (zweite Konsole):
 phc2sys -s eth0 -c CLOCK_REALTIME -w -m
 ```
 
+## 16. SWUpdate einbinden
+
+SWUpdate spielt später neue Images über das Netzwerk ein. In diesem Schritt kommt es nur ins Image. Das Rezept liefert der Layer `meta-swupdate`. Seine einzige Abhängigkeit (`LAYERDEPENDS_swupdate = "openembedded-layer"`) ist `meta-oe` aus Abschnitt 12.
+
+```bash
+cd ~/bitbake-builds/poky-wrynose/build
+git clone -b wrynose https://github.com/sbabic/meta-swupdate ../layers/meta-swupdate
+git -C ../layers/meta-swupdate log -1 --oneline    # Stand notieren
+bitbake-layers add-layer ../layers/meta-swupdate
+```
+
+`bitbake-setup update` aktualisiert nur die Layer, die es selbst angelegt hat. `meta-openembedded` und `meta-swupdate` mit `git pull` selbst aktualisieren.
+
+### Eigener Layer für SWUpdate
+
+Alles, was nur SWUpdate betrifft, kommt in einen zweiten eigenen Layer `meta-bbb-swupdate`. Er liegt wie `meta-bbb` im Repository und ist per symbolischem Link eingebunden (Abschnitt 4):
+
+```bash
+bitbake-layers create-layer ~/src/bbb-aes67-lab/meta-bbb-swupdate
+rm -r ~/src/bbb-aes67-lab/meta-bbb-swupdate/recipes-example
+ln -s ~/src/bbb-aes67-lab/meta-bbb-swupdate ../layers/meta-bbb-swupdate
+bitbake-layers add-layer ../layers/meta-bbb-swupdate
+```
+
+Abhängigkeiten in `meta-bbb-swupdate/conf/layer.conf` eintragen. Der Layer ergänzt das Image aus `meta-bbb` und braucht SWUpdate:
+
+```
+LAYERDEPENDS_meta-bbb-swupdate = "core meta-bbb swupdate"
+```
+
+### SWUpdate ins Image
+
+SWUpdate kommt über ein `.bbappend` zu `bbb-image` dazu. Ohne den SWUpdate-Layer entsteht dasselbe Image ohne SWUpdate.
+
+`meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend`:
+
+```
+IMAGE_INSTALL:append = " swupdate"
+```
+
+Vor dem Bauen prüfen, was im Image landet:
+
+```bash
+bitbake -e bbb-image | grep ^IMAGE_INSTALL=
+# IMAGE_INSTALL="packagegroup-core-boot  ethtool linuxptp swupdate"
+bitbake bbb-image
+```
+
+Karte wie in Abschnitt 6 beschreiben.
+
+### Prüfen
+
+SWUpdate startet beim Booten als Dienst. In PuTTY erscheinen nach Dropbear die Meldungen `Starting swupdate ...` und `SWUpdate v2026.05.1`. Auf dem Board:
+
+```bash
+swupdate -h
+```
+
+Beobachtungen beim ersten Start:
+
+| Meldung | Bedeutung |
+| --- | --- |
+| `Using default bootloader interface: uboot` | Zugriff auf die U-Boot-Umgebung ist eingebaut |
+| Handler `dummy`, `executor`, `flash`, `lua`, `raw`, `rawfile`, `shellscript`, `preinstall`, `postinstall` | `rawfile` installiert einzelne Dateien, `raw` schreibt ganze Partitionen |
+| `Registered Crypto Providers:` ohne Eintrag | Hash-Prüfung, Signatur und Verschlüsselung sind aus |
+| Lua-Fehler `module 'swupdate_handlers' not found` | harmlos, es gibt nur keine eigenen Handler in Lua |
+
+PTP läuft mit dem neuen Image unverändert (Werte wie in Abschnitt 15).
+
 ## Quellen
 
 - [Yocto Project Quick Build (6.0)](https://docs.yoctoproject.org/6.0.3/_sources/brief-yoctoprojectqs/index.rst.txt)
 - [BSP Developer’s Guide (6.0)](https://docs.yoctoproject.org/bsp-guide/bsp.html)
 - [Yocto Project 6.0 „Wrynose“ – Ankündigung](https://www.yoctoproject.org/?p=102509)
 - [CNX Software zu Yocto 6.0](https://www.cnx-software.com/2026/05/14/yocto-project-6-0-wrynose-released-with-linux-6-18-lts/)
+- [SWUpdate-Dokumentation](https://sbabic.github.io/swupdate/)
+- [meta-swupdate](https://github.com/sbabic/meta-swupdate)

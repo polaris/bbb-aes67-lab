@@ -8,6 +8,7 @@ Der Weg führt über die SD-Karte. Dort kann nichts kaputtgehen, was sich nicht 
 
 - Arbeit im Git-Branch `swupdate`. Der Stand auf `master` mit PTP bleibt lauffähig.
 - Eigener Layer `meta-bbb-swupdate` neben `meta-bbb`. So bleibt sichtbar, was nur für SWUpdate nötig ist.
+- Das Image heißt `bbb-image` und liegt in `meta-bbb`. Alles, was nur SWUpdate braucht (Pakete, `IMAGE_FEATURES`), kommt über `meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend` dazu. `conf/local.inc` enthält nur Einstellungen für den Build-Rechner und die Entwicklung.
 - Jeder Schritt endet mit „Prüfen“. Erst weitergehen, wenn die Prüfung klappt.
 - Jeder Schritt hat Lernfragen. Beantworte sie schriftlich in eigenen Worten, bevor du weitergehst. Kannst du eine nicht beantworten, ist das der Hinweis, wo du nachlesen solltest.
 - Nach jedem Schritt das Ergebnis in `docs/anleitung.md` übernehmen (siehe letzter Abschnitt). Nicht alles erst am Ende.
@@ -24,9 +25,10 @@ Lesen:
 Aufgaben:
 1. Branch `swupdate` anlegen.
 2. `meta-swupdate` (Branch `wrynose`) nach `../layers/` klonen und einbinden. Abhängigkeiten in `meta-swupdate/conf/layer.conf` nachsehen (`LAYERDEPENDS`) und fehlende Layer ergänzen. `meta-oe` ist schon da.
-3. Layer `meta-bbb-swupdate` mit `bitbake-layers create-layer` anlegen, ins Repo legen und einbinden.
-4. `swupdate` ins Image aufnehmen und bauen. Karte beschreiben, booten.
-5. Nachsehen, wie SWUpdate konfiguriert ist: `bitbake -c menuconfig swupdate`. Merken, welche Handler aktiv sind. Die Konfiguration später über eine eigene `defconfig` im `.bbappend` festlegen, nicht nur im Menü.
+3. Layer `meta-bbb-swupdate` mit `bitbake-layers create-layer` im Repo anlegen, per symbolischem Link nach `../layers/` holen (wie `meta-bbb`) und einbinden. `LAYERDEPENDS` auf `core meta-bbb swupdate` setzen.
+4. Eigenes Image `bbb-image.bb` in `meta-bbb` anlegen (auf Basis von `core-image-minimal`, mit `ethtool` und `linuxptp`). `IMAGE_INSTALL` aus `conf/local.inc` entfernen. In `meta-bbb` `LAYERDEPENDS` um `openembedded-layer` ergänzen.
+5. `swupdate` über `bbb-image.bbappend` in `meta-bbb-swupdate` ins Image aufnehmen. Mit `bitbake -e bbb-image | grep ^IMAGE_INSTALL=` prüfen, dann `bitbake bbb-image`. Karte beschreiben (Dateiname jetzt `bbb-image-beaglebone-yocto.rootfs.wic.zst`), booten.
+6. Nachsehen, wie SWUpdate konfiguriert ist: `bitbake -c menuconfig swupdate`. Merken, welche Handler aktiv sind. Die Konfiguration später über eine eigene `defconfig` im `.bbappend` festlegen, nicht nur im Menü.
 
 Prüfen: Auf dem Board läuft `swupdate -h`. Die Liste der Handler steht in der Ausgabe von `swupdate -v -i /dev/null` oder in den Startmeldungen.
 
@@ -66,7 +68,7 @@ Lesen:
 - Suricatta nur überfliegen, um zu wissen, dass es den Weg gibt.
 
 Aufgaben:
-1. `swupdate-www` ins Image aufnehmen. Den Dienst so starten, dass der Webserver auf Port 8080 läuft.
+1. `swupdate-www` über `bbb-image.bbappend` ins Image aufnehmen. Den Dienst so starten, dass der Webserver auf Port 8080 läuft.
 2. Im Browser am PC `http://<Board-IP>:8080` öffnen und `update-hello.swu` hochladen.
 3. Herausfinden, wie der Dienst gestartet wird (Init-Skript oder systemd-Unit) und wo die Startoptionen stehen.
 
@@ -137,7 +139,7 @@ Lesen:
 - In „meta-SWUpdate“ die Variablen `SWUPDATE_IMAGES` und `SWUPDATE_IMAGES_FSTYPES`.
 
 Aufgaben:
-1. Rezept `update-image.bb` mit `inherit swupdate`. `SWUPDATE_IMAGES` enthält `core-image-minimal` als `.ext4.gz`.
+1. Rezept `update-image.bb` mit `inherit swupdate`. `SWUPDATE_IMAGES` enthält `bbb-image` als `.ext4.gz`.
 2. `sw-description` mit zwei Collections `copy1` und `copy2`. Jede schreibt das Image auf die jeweils andere Partition und setzt im Abschnitt `bootenv` die Variable `rootpart`.
 3. Kleines Skript auf dem Board, das aus `/proc/cmdline` die laufende Partition ermittelt und `swupdate` mit dem richtigen `-e` aufruft. Für den Webserver das gleiche über die Startoptionen des Dienstes lösen.
 4. Eine sichtbare Versionsangabe ins Image bringen, z. B. eine Datei `/etc/bbb-version` mit Build-Datum.
@@ -180,8 +182,8 @@ Lesen:
 - Kernel-Dokumentation `Documentation/filesystems/overlayfs.rst`: Abschnitte zu upper/lower und „Changes to underlying filesystems“.
 
 Aufgaben:
-1. `read-only-rootfs` zu `IMAGE_FEATURES` hinzufügen. Booten und notieren, was nicht mehr geht: Dienste, die nach `/etc` oder `/var` schreiben wollen, SSH-Hostschlüssel, `fw_setenv` (Sperrdatei), SWUpdate selbst.
-2. `overlayfs-etc` zu `IMAGE_FEATURES` hinzufügen, sodass `/etc` als Overlay auf der `data`-Partition liegt. Die Variablen `OVERLAYFS_ETC_*` in der Klasse `overlayfs-etc` von OE-Core nachlesen und setzen.
+1. `read-only-rootfs` in `bbb-image.bbappend` zu `IMAGE_FEATURES` hinzufügen. Booten und notieren, was nicht mehr geht: Dienste, die nach `/etc` oder `/var` schreiben wollen, SSH-Hostschlüssel, `fw_setenv` (Sperrdatei), SWUpdate selbst.
+2. `overlayfs-etc` ebenfalls dort zu `IMAGE_FEATURES` hinzufügen, sodass `/etc` als Overlay auf der `data`-Partition liegt. Die Variablen `OVERLAYFS_ETC_*` in der Klasse `overlayfs-etc` von OE-Core nachlesen und setzen.
 3. Prüfen, ob die Bestätigung aus Schritt 7 noch funktioniert. Sie schreibt in die U-Boot-Umgebung, nicht ins Root-Dateisystem.
 4. Die typische Falle selbst erleben: Auf dem Board `/etc/ptp4l.conf` ändern. Dann ein Update mit einer neuen `ptp4l.conf` einspielen. Ergebnis: Die geänderte Datei im Overlay verdeckt die neue aus dem Update.
 5. Eine Strategie dafür festlegen und umsetzen, z. B. Gerätekonfiguration nicht in `/etc`, sondern nach `/data/config`, oder ein Post-Install-Skript in `sw-description`, das bestimmte Dateien aus dem Overlay entfernt.
