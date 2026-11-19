@@ -143,7 +143,8 @@ Aufgaben:
 2. `sw-description` mit zwei Collections `copy1` und `copy2`. Jede schreibt das Image auf die jeweils andere Partition und setzt im Abschnitt `bootenv` die Variable `rootpart`.
 3. Kleines Skript auf dem Board, das aus `/proc/cmdline` die laufende Partition ermittelt und `swupdate` mit dem richtigen `-e` aufruft. Für den Webserver das gleiche über die Startoptionen des Dienstes lösen.
 4. Eine sichtbare Versionsangabe ins Image bringen, z. B. eine Datei `/etc/bbb-version` mit Build-Datum.
-5. Update einspielen, neu starten, Version prüfen. Danach zurück auf die andere Seite.
+5. Die Hardware-Revision nur an einer Stelle festlegen: `HW_REVISION` aus `hwrevision.bb` nach `meta-bbb-swupdate/conf/layer.conf` verschieben, damit alle Rezepte sie sehen. In `sw-description` von `update-hello` und `update-image` `hardware-compatibility: [ "@@HW_REVISION@@" ];` eintragen. In der ausgepackten `.swu` prüfen, dass dort `1.0` steht.
+6. Update einspielen, neu starten, Version prüfen. Danach zurück auf die andere Seite.
 
 Prüfen: Zweimal hintereinander ein Update. Das Board wechselt A → B → A, die Version steigt jedes Mal. Das laufende System wird nie überschrieben.
 

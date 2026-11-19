@@ -525,6 +525,198 @@ Karte neu beschreiben. Beim Start erscheint jetzt ein Crypto-Provider:
 
 OpenSSL stellt nur die Hash-Prüfung (SHA-256) bereit, weil nur sie eingeschaltet ist. Für signierte Updates kommt später ein eigener Eintrag dazu. Der Stern markiert vermutlich den Provider, der als Standard benutzt wird. Die Handler sind unverändert.
 
+## 17. Erstes Update mit einer Datei
+
+Das erste Update installiert nur eine Textdatei. So lässt sich das Format ohne Risiko ausprobieren.
+
+### Update-Rezept
+
+Ablage im Layer `meta-bbb-swupdate`. BitBake sucht `file://`-Dateien unter anderem im Ordner `files/` neben dem Rezept:
+
+```
+recipes-extended/update-hello/
+├── update-hello.bb
+└── files/
+    ├── sw-description
+    └── hello.txt
+```
+
+`update-hello.bb`:
+
+```
+SUMMARY = "Erstes Test-Update: installiert eine einzelne Datei"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
+SRC_URI = " \
+    file://sw-description \
+    file://hello.txt \
+"
+
+inherit swupdate
+```
+
+Die Klasse `swupdate` packt alle Dateien aus `SRC_URI` in die `.swu`, `sw-description` an erster Stelle. Images aus dem Deploy-Ordner kämen über `SWUPDATE_IMAGES` dazu, hier nicht nötig.
+
+`files/sw-description`:
+
+```
+software =
+{
+	version = "0.1.0";
+	description = "Erstes Test-Update";
+	hardware-compatibility: [ "1.0" ];
+
+	files: (
+		{
+			filename = "hello.txt";
+			path = "/home/root/hello.txt";
+		}
+	);
+};
+```
+
+`filename` ist der Name in der `.swu`, `path` das Ziel auf dem Board. Einträge unter `files` installiert der Handler `rawfile`. Eine Zeile `sha256` ist nicht nötig, siehe unten.
+
+Bauen und Inhalt ansehen:
+
+```bash
+bitbake update-hello
+cpio -it < tmp/deploy/images/beaglebone-yocto/update-hello-beaglebone-yocto.rootfs.swu
+# sw-description
+# hello.txt
+# 2 blocks
+```
+
+Eine `.swu` ist ein cpio-Archiv. SWUpdate liest es als Datenstrom von vorn. Deshalb muss `sw-description` zuerst kommen: SWUpdate muss wissen, was zu tun ist, bevor die Daten eintreffen.
+
+### Hardware-Revision
+
+Die `defconfig` von `meta-swupdate` schaltet `CONFIG_HW_COMPATIBILITY=y` ein, mit `CONFIG_HW_COMPATIBILITY_FILE="/etc/hwrevision"`. Damit ist `hardware-compatibility` in `sw-description` Pflicht. Ohne den Eintrag bricht SWUpdate ab:
+
+```
+[ERROR] : SWUPDATE failed [0] ERROR parser.c : parse_hw_compatibility : 305 : HW compatibility not found
+[ERROR] : SWUPDATE failed [0] ERROR parser.c : parser : 1112 : Found nothing to install
+```
+
+Die folgenden Meldungen zum JSON-Parser sind nur Folgefehler.
+
+Auf dem Board steht in `/etc/hwrevision` eine Zeile `<Board> <Revision>`. SWUpdate installiert nur, wenn die Revision in `hardware-compatibility` vorkommt. `meta-swupdate` legt die Datei nicht an. Eigenes Rezept `recipes-extended/hwrevision/hwrevision.bb`:
+
+```
+SUMMARY = "Hardware-Revision für die Kompatibilitätsprüfung von SWUpdate"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
+# Inhalt hängt von MACHINE ab, daher maschinenspezifisches Paket
+PACKAGE_ARCH = "${MACHINE_ARCH}"
+
+# Revision der Platine, muss in hardware-compatibility von sw-description stehen
+HW_REVISION ?= "1.0"
+
+# Keine Quellen, kein Compiler nötig
+S = "${UNPACKDIR}"
+INHIBIT_DEFAULT_DEPS = "1"
+
+do_configure[noexec] = "1"
+do_compile[noexec] = "1"
+
+do_install() {
+    install -d ${D}${sysconfdir}
+    echo "${MACHINE} ${HW_REVISION}" > ${D}${sysconfdir}/hwrevision
+}
+```
+
+Ins Image über `meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend`:
+
+```
+IMAGE_INSTALL:append = " swupdate hwrevision"
+```
+
+Image neu bauen, Karte beschreiben. Auf dem Board:
+
+```bash
+cat /etc/hwrevision     # beaglebone-yocto 1.0
+```
+
+SWUpdate meldet beim Start `Running on beaglebone-yocto Revision 1.0`.
+
+### Auf dem Board installieren
+
+```bash
+scp tmp/deploy/images/beaglebone-yocto/update-hello-beaglebone-yocto.rootfs.swu root@<Board-IP>:/tmp/
+```
+
+Auf dem Board:
+
+```bash
+swupdate -v -M -m -i /tmp/update-hello-beaglebone-yocto.rootfs.swu
+cat /home/root/hello.txt
+```
+
+`-M` und `-m` schalten die Markierungen in der U-Boot-Umgebung ab (Transaktion „läuft“ und Status „installiert“). Ohne `/etc/fw_env.config` kann SWUpdate sie nicht schreiben. Die Datei wird zwar installiert, das Update gilt aber als fehlgeschlagen:
+
+```
+[ERROR] : SWUPDATE failed [0] ERROR uboot.c : bootloader_initialize : 47 : Cannot initialize environment from /etc/fw_env.config
+[ERROR] : SWUPDATE failed [0] ERROR stream_interface.c : network_initializer : 789 : Cannot persistently store INSTALLED update state.
+```
+
+Mit `-M -m` endet der Lauf mit `SWUpdate was successful !`. Die Optionen entfallen, sobald die U-Boot-Umgebung aus Linux erreichbar ist.
+
+Der Aufruf mit `-i` legt dieselben Sockets an wie der SWUpdate-Dienst (`/tmp/sockinstctrl`, `/tmp/swupdateprog`) und löscht sie am Ende. Vor Updates über den Dienst das Board neu starten.
+
+### Prüfsummen
+
+Die `.swu` baut `swugenerator`. Es formatiert `sw-description` neu und setzt für jede Datei selbst die SHA-256-Prüfsumme (`swugenerator/generator.py`):
+
+```python
+if not self.nohash:
+    entry["sha256"] = new.getsha256()
+```
+
+Ein eigener Wert für `sha256` in `sw-description` wird überschrieben, ebenso der Platzhalter `$swupdate_get_sha256(...)`. Prüfen durch Auspacken der `.swu`:
+
+```bash
+mkdir -p ~/swu-test && cd ~/swu-test
+cpio -id < ~/bitbake-builds/poky-wrynose/build/tmp/deploy/images/beaglebone-yocto/update-hello-beaglebone-yocto.rootfs.swu
+cat sw-description
+sha256sum hello.txt      # gleicher Wert wie in sw-description
+```
+
+Aus dem Quellcode von SWUpdate (2026.05.1):
+
+- Eine Prüfsumme aus lauter Nullen gilt als „keine Prüfsumme“ (`IsValidHash` in `core/util.c`). Dann wird nicht verglichen.
+- `CONFIG_HASH_VERIFY` prüft vorhandene Prüfsummen, verlangt aber keine. Pflicht werden sie erst mit `CONFIG_SIGNED_IMAGES` (`check_missing_hash` in `core/parser.c`). Ohne Signatur könnte jemand mit der `.swu` auch die Prüfsumme entfernen.
+
+### Kaputtes Update
+
+Um die Prüfung zu testen, muss die fertige `.swu` verändert werden. Das entspricht einer Datei, die nach dem Bauen beschädigt oder manipuliert wurde:
+
+```bash
+cd ~/swu-test
+echo "manipuliert" > hello.txt
+printf '%s\n' sw-description hello.txt | cpio -o -H newc > update-hello-broken.swu
+scp update-hello-broken.swu root@<Board-IP>:/tmp/
+```
+
+`printf` hält die Reihenfolge ein, `sw-description` zuerst. `-H newc` ist das cpio-Format ohne eigene Prüfsumme, sodass nur SWUpdate den Fehler finden kann.
+
+Auf dem Board:
+
+```bash
+swupdate -v -M -m -i /tmp/update-hello-broken.swu
+cat /home/root/hello.txt     # unverändert
+```
+
+```
+[TRACE] : SWUPDATE running :  [extract_files] :         filename hello.txt
+[TRACE] : SWUPDATE running :  [extract_files] :         size 12 required
+[ERROR] : SWUPDATE failed [0] ERROR cpio_utils.c : hash_compare : 588 : HASH mismatch : 99df166e…101b <--> d8699e30…1f5c
+[ERROR] : SWUPDATE failed [1] Image invalid or corrupted. Not installing ...
+```
+
+Links steht die Prüfsumme aus `sw-description`, rechts die der gelieferten Daten. Der Fehler kommt beim Auspacken (`extract_files`), vor `Valid image found: copying to FLASH`. SWUpdate arbeitet in zwei Phasen: erst alle Dateien in ein temporäres Verzeichnis auspacken und prüfen, dann installieren. Mit der Eigenschaft `installed-directly = true` schreibt ein Handler direkt aus dem Datenstrom. Dann fällt ein Fehler erst auf, wenn die Daten schon geschrieben sind.
+
 ## Quellen
 
 - [Yocto Project Quick Build (6.0)](https://docs.yoctoproject.org/6.0.3/_sources/brief-yoctoprojectqs/index.rst.txt)
