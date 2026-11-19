@@ -1,0 +1,13 @@
+software =
+{
+	version = "0.1.0";
+	description = "Erstes Test-Update";
+	hardware-compatibility: [ "1.0" ];
+
+	files: (
+		{
+			filename = "hello.txt";
+			path = "/home/root/hello.txt";
+		}
+	);
+};
