@@ -461,10 +461,69 @@ Beobachtungen beim ersten Start:
 | --- | --- |
 | `Using default bootloader interface: uboot` | Zugriff auf die U-Boot-Umgebung ist eingebaut |
 | Handler `dummy`, `executor`, `flash`, `lua`, `raw`, `rawfile`, `shellscript`, `preinstall`, `postinstall` | `rawfile` installiert einzelne Dateien, `raw` schreibt ganze Partitionen |
-| `Registered Crypto Providers:` ohne Eintrag | Hash-Prüfung, Signatur und Verschlüsselung sind aus |
+| `Registered Crypto Providers:` ohne Eintrag | Hash-Prüfung, Signatur und Verschlüsselung sind aus, siehe unten |
 | Lua-Fehler `module 'swupdate_handlers' not found` | harmlos, es gibt nur keine eigenen Handler in Lua |
 
 PTP läuft mit dem neuen Image unverändert (Werte wie in Abschnitt 15).
+
+### Konfiguration von SWUpdate ansehen und anpassen
+
+Die Konfiguration kommt aus der `defconfig` in `meta-swupdate/recipes-support/swupdate/swupdate/`. Ansehen geht mit `bitbake -c menuconfig swupdate` (Suche mit `/`) oder direkt in der fertigen `.config` im Build-Verzeichnis des Rezepts:
+
+```bash
+B=$(bitbake -e swupdate | sed -n 's/^B="\(.*\)"/\1/p')
+grep -E "SSL|HASH|SIGNED|ENCRYPT|UBOOT|WEBSERVER|ARCHIVE|GUNZIP|ZSTD" "$B/.config"
+```
+
+`bitbake -e` liefert den Pfad des Build-Verzeichnisses (`B`), `sed` schneidet ihn aus. Stand der Standard-Konfiguration:
+
+| Option | Stand | Bedeutung |
+| --- | --- | --- |
+| `CONFIG_UBOOT`, `CONFIG_UBOOT_FWENV="/etc/fw_env.config"` | an | U-Boot-Umgebung über `libubootenv` |
+| `CONFIG_UBOOT_DEFAULTENV="/etc/u-boot-initial-env"` | – | Ersatz-Umgebung, solange U-Boot keine gespeichert hat |
+| `CONFIG_WEBSERVER`, `CONFIG_MONGOOSESSL` | an | Webserver mit HTTPS |
+| `CONFIG_SSL_IMPL_OPENSSL` | an | OpenSSL ist eingebaut, wird aber nur vom Webserver genutzt |
+| `CONFIG_HASH_VERIFY` | aus | `sha256` in `sw-description` wird nicht geprüft |
+| `CONFIG_SIGNED_IMAGES`, `CONFIG_ENCRYPTED_IMAGES` | aus | keine Signatur, keine Verschlüsselung |
+| `CONFIG_GUNZIP` | an | `.gz`-Images möglich |
+| `CONFIG_ZSTD`, `CONFIG_ARCHIVE` | aus | keine `.zst`-Images, keine tar-Archive |
+
+Weil Hash-Prüfung, Signatur und Verschlüsselung aus sind, meldet sich OpenSSL nicht als Crypto-Provider an. Daher die leere Zeile beim Start.
+
+Änderungen im Menü gehen beim nächsten `bitbake -c clean swupdate` verloren. Dauerhaft geht es über Fragmente: Das Rezept erbt `cml1` und mischt alle `.cfg`-Dateien aus `SRC_URI` mit `merge_config.sh` über die `defconfig`. Dieselben Fragmente wertet es auch beim Parsen aus und ergänzt `DEPENDS` passend, z. B. `libarchive` bei `CONFIG_ARCHIVE=y`. Nach Änderungen im Menü erzeugt `bitbake -c diffconfig swupdate` so ein Fragment.
+
+Hash-Prüfung einschalten:
+
+`meta-bbb-swupdate/recipes-support/swupdate/swupdate_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://hash.cfg"
+```
+
+`meta-bbb-swupdate/recipes-support/swupdate/files/hash.cfg`:
+
+```
+CONFIG_HASH_VERIFY=y
+```
+
+Prüfen. `-f` erzwingt, dass `do_configure` neu läuft:
+
+```bash
+bitbake -c configure -f swupdate
+grep HASH_VERIFY "$B/.config"     # CONFIG_HASH_VERIFY=y
+bitbake bbb-image
+```
+
+Karte neu beschreiben. Beim Start erscheint jetzt ein Crypto-Provider:
+
+```
+[INFO ] : SWUPDATE running :  [print_registered_cryptolib] : Registered Crypto Providers:
+[INFO ] : SWUPDATE running :  [print_registered_cryptolib] :    Provider for hash
+[INFO ] : SWUPDATE running :  [print_registered_cryptolib] :            opensslSHA256*
+```
+
+OpenSSL stellt nur die Hash-Prüfung (SHA-256) bereit, weil nur sie eingeschaltet ist. Für signierte Updates kommt später ein eigener Eintrag dazu. Der Stern markiert vermutlich den Provider, der als Standard benutzt wird. Die Handler sind unverändert.
 
 ## Quellen
 
