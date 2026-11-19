@@ -1,0 +1,2 @@
+# Bis Schritt 4: keine Markierungen in der U-Boot-Umgebung, fw_env.config fehlt noch
+SWUPDATE_ARGS="${SWUPDATE_ARGS} -M -m"
