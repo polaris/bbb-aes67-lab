@@ -1,1 +1,1 @@
-IMAGE_INSTALL:append = " swupdate"
+IMAGE_INSTALL:append = " swupdate hwrevision"
