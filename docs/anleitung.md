@@ -717,6 +717,91 @@ cat /home/root/hello.txt     # unverändert
 
 Links steht die Prüfsumme aus `sw-description`, rechts die der gelieferten Daten. Der Fehler kommt beim Auspacken (`extract_files`), vor `Valid image found: copying to FLASH`. SWUpdate arbeitet in zwei Phasen: erst alle Dateien in ein temporäres Verzeichnis auspacken und prüfen, dann installieren. Mit der Eigenschaft `installed-directly = true` schreibt ein Handler direkt aus dem Datenstrom. Dann fällt ein Fehler erst auf, wenn die Daten schon geschrieben sind.
 
+## 18. Updates über den Browser
+
+SWUpdate läuft seit Abschnitt 16 als Dienst, bisher ohne Webserver. Mit dem Webserver lässt sich eine `.swu` im Browser hochladen.
+
+### Wie der Dienst startet
+
+Alles kommt aus dem Rezept `swupdate` in `meta-swupdate`:
+
+1. `/etc/init.d/swupdate` ist per `update-rc.d` angemeldet (`INITSCRIPT_PARAMS = "defaults 70"`). Daher die Meldung `Starting swupdate ...` beim Booten.
+2. Das Init-Skript startet `/usr/lib/swupdate/swupdate.sh`.
+3. `swupdate.sh` setzt Vorgaben, liest alle Dateien aus `/usr/lib/swupdate/conf.d/` und `/etc/swupdate/conf.d/` nach Namen sortiert ein und startet `swupdate` mit den Variablen `SWUPDATE_ARGS`, `SWUPDATE_WEBSERVER_ARGS` (für `-w`) und `SWUPDATE_SURICATTA_ARGS` (für `-u`).
+
+Eine Datei in `/etc/swupdate/conf.d/` ersetzt die gleichnamige in `/usr/lib/swupdate/conf.d/`. Vorgaben aus Paketen gehören nach `/usr/lib`, Änderungen von Hand auf dem Board nach `/etc`.
+
+Die Pakete teilen sich so auf:
+
+| Paket | Inhalt |
+| --- | --- |
+| `swupdate` | Programm, Init-Skript, `swupdate.sh`, alles unter `/usr/lib/swupdate/` |
+| `swupdate-www` | Webseite unter `/www` und `/usr/lib/swupdate/conf.d/10-mongoose-args` |
+
+`10-mongoose-args` setzt `SWUPDATE_WEBSERVER_ARGS="-r /www"`. Ist `swupdate-www` im Image, startet der Webserver also von selbst. Die Datei passt auch auf das Muster `${libdir}/swupdate/*` von `swupdate`. Sie landet trotzdem in `swupdate-www`, weil das Rezept die Teilpakete per `PACKAGES =+` vor das Hauptpaket stellt und jede Datei an das erste passende Paket geht.
+
+### Webserver ins Image
+
+`meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend`:
+
+```
+IMAGE_INSTALL:append = " swupdate swupdate-www hwrevision"
+```
+
+### Startoptionen ergänzen
+
+Ohne Zugriff auf die U-Boot-Umgebung braucht auch der Dienst `-M -m` (Abschnitt 17). Dafür eine eigene Datei in `conf.d`. Achtung: `swupdate.sh` setzt `SWUPDATE_ARGS="-v ${SWUPDATE_EXTRA_ARGS}"` **vor** dem Einlesen von `conf.d`. `SWUPDATE_EXTRA_ARGS` in einer `conf.d`-Datei wirkt deshalb nicht mehr. `SWUPDATE_ARGS` selbst erweitern.
+
+`meta-bbb-swupdate/recipes-support/swupdate/files/20-no-markers`:
+
+```sh
+# Bis Schritt 4: keine Markierungen in der U-Boot-Umgebung, fw_env.config fehlt noch
+SWUPDATE_ARGS="${SWUPDATE_ARGS} -M -m"
+```
+
+Das `.bbappend` aus Abschnitt 16 erweitern, `meta-bbb-swupdate/recipes-support/swupdate/swupdate_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://hash.cfg file://20-no-markers"
+
+do_install:append() {
+    install -m 0644 ${UNPACKDIR}/20-no-markers ${D}${libdir}/swupdate/conf.d/
+}
+```
+
+`FILES` ist nicht nötig, `${libdir}/swupdate/*` gehört schon zum Paket `swupdate`. Zum schnellen Ausprobieren ohne Neubau geht dieselbe Zeile auch von Hand nach `/etc/swupdate/conf.d/20-no-markers`, dann `reboot`.
+
+Image bauen, Karte beschreiben. Auf dem Board prüfen:
+
+```bash
+ls /usr/lib/swupdate/conf.d/     # 10-mongoose-args  20-no-markers
+ps | grep swupdate
+#  304 root     51048 S    /usr/bin/swupdate -v -M -m -w -r /www
+#  324 root     67440 S    /usr/bin/swupdate -v -M -m -w -r /www
+```
+
+Zwei Prozesse sind normal. SWUpdate startet Schnittstellen wie den Webserver als Kindprozesse mit derselben Befehlszeile.
+
+### Update im Browser
+
+Im Browser `http://<Board-IP>:8080` öffnen und die `.swu` hochladen. Die Meldungen von SWUpdate erscheinen in PuTTY. Zum Erkennen den Text in `hello.txt` vorher ändern und `update-hello` neu bauen. Danach auf dem Board:
+
+```bash
+cat /home/root/hello.txt     # neuer Text
+```
+
+Andere Wege, ein Update einzuspielen:
+
+| Option | Weg |
+| --- | --- |
+| `-i <datei>` | Datei auf dem Board (Abschnitt 17) |
+| `-w` | Upload über den Webserver |
+| `-d` | SWUpdate lädt die `.swu` selbst von einer URL |
+| `-u` | Suricatta: SWUpdate fragt regelmäßig einen Update-Server ab, z. B. hawkBit |
+
+Das Paket `swupdate-progress` verbindet sich mit dem laufenden SWUpdate und zeigt den Fortschritt an, z. B. per psplash auf einem Display. Nach einem erfolgreichen Update kann es ein Skript ausführen oder neu starten.
+
 ## Quellen
 
 - [Yocto Project Quick Build (6.0)](https://docs.yoctoproject.org/6.0.3/_sources/brief-yoctoprojectqs/index.rst.txt)
