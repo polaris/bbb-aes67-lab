@@ -802,6 +802,147 @@ Andere Wege, ein Update einzuspielen:
 
 Das Paket `swupdate-progress` verbindet sich mit dem laufenden SWUpdate und zeigt den Fortschritt an, z. B. per psplash auf einem Display. Nach einem erfolgreichen Update kann es ein Skript ausführen oder neu starten.
 
+## 19. U-Boot-Umgebung aus Linux
+
+U-Boot und Linux laufen nie gleichzeitig. Die einzige Stelle, über die beide Informationen austauschen, ist die U-Boot-Umgebung. SWUpdate schreibt dort den Stand eines Updates hinein und schaltet später darüber zwischen den Partitionen A und B um. Dafür muss Linux die Umgebung lesen und schreiben können.
+
+### Wo U-Boot die Umgebung speichert
+
+Die Startmeldung verrät den Ort:
+
+```
+Loading Environment from FAT... Unable to read "uboot.env" from mmc0:1...
+```
+
+U-Boot hat eine eingebaute Standard-Umgebung. Fehlt `uboot.env`, startet es damit ganz normal. Die Datei speichert nur Änderungen. Angelegt wird sie in U-Boot (Leertaste beim Start) mit:
+
+```
+=> saveenv
+Saving Environment to FAT... OK
+```
+
+`env info` ist in diesem U-Boot nicht eingebaut. Die Größe steht am Ende von `printenv`:
+
+```
+Environment size: 9034/131068 bytes
+```
+
+131 068 Byte für Variablen plus 4 Byte CRC32 ergeben 131 072 = `0x20000`. Bei einer redundanten Umgebung käme ein Byte für einen Zähler dazu (131 067).
+
+U-Boot kam bisher fertig aus dem Shared-State-Mirror (Abschnitt 4), lokal gibt es keine `.config`. Konfigurieren lassen und nachsehen:
+
+```bash
+bitbake -c configure u-boot
+B=$(bitbake -e u-boot | sed -n 's/^B="\(.*\)"/\1/p')
+grep -rE "^CONFIG_ENV_(SIZE|IS_IN_FAT|FAT_)|^CONFIG_SYS_REDUNDAND|^CONFIG_BOOTCOUNT" "$B" --include=.config
+```
+
+| Option | Wert | Bedeutung |
+| --- | --- | --- |
+| `CONFIG_ENV_SIZE` | `0x20000` | 128 KiB |
+| `CONFIG_ENV_IS_IN_FAT` | `y` | Umgebung als Datei in einer FAT-Partition |
+| `CONFIG_ENV_FAT_INTERFACE`, `CONFIG_ENV_FAT_DEVICE_AND_PART` | `"mmc"`, `"0:1"` | `mmc 0` Partition 1, fest die SD-Karte |
+| `CONFIG_ENV_FAT_FILE` | `"uboot.env"` | Dateiname |
+| `CONFIG_SYS_REDUNDAND_ENVIRONMENT` | nicht gesetzt | nur eine Kopie |
+| `CONFIG_BOOTCOUNT_LIMIT`, `CONFIG_BOOTCOUNT_AM33XX` | `y` | Bootzähler im Register der Echtzeituhr, übersteht Neustart, aber kein Ausschalten |
+| `CONFIG_BOOTCOUNT_BOOTLIMIT` | `0` | kein Grenzwert vorgegeben |
+
+U-Boot nummeriert die Controller: `mmc 0` ist der microSD-Steckplatz (Linux `mmcblk0`), `mmc 1` das eMMC (Linux `mmcblk1`). U-Boot selbst kommt aus dem eMMC, liest seine Umgebung aber fest von der SD-Karte. Ohne Karte startet es mit der eingebauten Umgebung und kann nichts speichern. Für ein System ganz im eMMC muss U-Boot neu gebaut werden.
+
+In Linux ist `mmc 0:1` die Partition `/dev/mmcblk0p1`, eingehängt unter `/boot`. Die Umgebung ist also die Datei `/boot/uboot.env`.
+
+### fw_env.config
+
+`libubootenv` (Bibliothek für SWUpdate, Kommandos `fw_printenv` und `fw_setenv`) liest den Ort aus `/etc/fw_env.config`. Aufbau einer Zeile:
+
+```
+<Gerät oder Datei>  <Versatz>  <Größe>  [Sektorgröße]  [Anzahl Sektoren]  [Sperre aus]
+```
+
+Sektorgröße und Anzahl gelten nur für rohen NOR- und NAND-Flash. Zwei Zeilen bedeuten eine redundante Umgebung. Hier genügt eine Zeile:
+
+```
+/boot/uboot.env 0x0 0x20000
+```
+
+Die Größe muss genau zu `CONFIG_ENV_SIZE` passen, sonst stimmt die CRC nicht.
+
+Das U-Boot-Rezept aus OE-Core installiert `fw_env.config` selbst, sobald die Datei in `${UNPACKDIR}` liegt (`u-boot.inc`). Sie landet im Paket `u-boot-env`, zusammen mit `/etc/u-boot-initial-env`. Ein `.bbappend` muss sie nur in `SRC_URI` aufnehmen.
+
+`meta-bbb-swupdate/recipes-bsp/u-boot/u-boot_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://fw_env.config"
+```
+
+Die Datei liegt in `meta-bbb-swupdate/recipes-bsp/u-boot/files/fw_env.config`. `FILESEXTRAPATHS` ist nötig, weil BitBake sonst nur neben dem ursprünglichen Rezept in OE-Core sucht. Durch die Änderung passt der Shared-State-Mirror für U-Boot nicht mehr, U-Boot wird einmal lokal gebaut.
+
+Ins Image über `meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend`:
+
+```
+IMAGE_INSTALL:append = " swupdate swupdate-www u-boot-env libubootenv-bin hwrevision"
+```
+
+`libubootenv0` ist schon als Abhängigkeit von SWUpdate im Image. `fw_printenv` und `fw_setenv` stecken in `libubootenv-bin`.
+
+### Prüfen
+
+Image bauen, Karte beschreiben. **Nach jedem Beschreiben der Karte fehlt `uboot.env`**, weil sie nur durch `saveenv` entsteht. `fw_printenv` meldet dann nur `Cannot initialize environment`. Deshalb zuerst in U-Boot `saveenv`, dann booten.
+
+In beide Richtungen testen:
+
+```bash
+fw_setenv test 123
+reboot
+```
+
+```
+=> printenv test
+test=123
+=> setenv test 456
+=> saveenv
+=> boot
+```
+
+```bash
+fw_printenv test      # test=456
+fw_setenv test        # ohne Wert: Variable löschen
+```
+
+### Markierungen von SWUpdate wieder einschalten
+
+Die Notlösung `-M -m` aus Abschnitt 17 und 18 entfällt. `files/20-no-markers` löschen und `swupdate_%.bbappend` auf den Stand aus Abschnitt 16 zurücksetzen:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://hash.cfg"
+```
+
+SWUpdate schreibt dann zwei Variablen (`core/stream_interface.c`, `include/state.h`):
+
+| Variable | Option zum Abschalten | Werte |
+| --- | --- | --- |
+| `recovery_status` | `-M` | `in_progress` während der Installation, gelöscht bei Erfolg, `failed` bei Fehler |
+| `ustate` | `-m` | `1` installiert, `3` fehlgeschlagen; außerdem `0` OK, `2` wird getestet |
+
+`recovery_status=in_progress` nach einem Neustart zeigt ein abgebrochenes Update an, etwa durch Stromausfall. `ustate=1` heißt: installiert, aber noch nicht bestätigt. Der Wert bleibt stehen, bis ihn jemand zurücksetzt (Thema Rückfall mit Bootzähler).
+
+Test mit dem Update aus Abschnitt 17, ohne `-M -m`:
+
+```bash
+swupdate -v -i /tmp/update-hello-beaglebone-yocto.rootfs.swu
+fw_printenv | grep -E "ustate|recovery_status"     # ustate=1
+```
+
+Die Fehler `Cannot persistently store … update state` erscheinen nicht mehr.
+
+### Grenzen dieses Aufbaus
+
+- Nur eine Kopie der Umgebung, dazu in einer FAT-Datei. Ein Stromausfall beim Schreiben kann sie zerstören. U-Boot fällt dann auf die eingebaute Umgebung zurück, gesetzte Variablen sind weg.
+- Der Bootzähler liegt im Register der Echtzeituhr. Linux kann ihn mit `fw_setenv` nicht zurücksetzen.
+- Die Umgebung hängt an der SD-Karte.
+
 ## Quellen
 
 - [Yocto Project Quick Build (6.0)](https://docs.yoctoproject.org/6.0.3/_sources/brief-yoctoprojectqs/index.rst.txt)
