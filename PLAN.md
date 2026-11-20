@@ -173,7 +173,39 @@ Lernfragen:
 1. Wer zählt beim Start hoch, und wer setzt zurück?
 2. Warum muss der Watchdog aktiv sein, damit das auch bei einem hängenden Kernel funktioniert?
 
-## Schritt 8: Schreibgeschütztes Root-Dateisystem mit Overlay für /etc
+## Schritt 8: Update-System mit USB-Stick (single copy)
+
+Ergänzt A/B um ein kleines Linux mit SWUpdate, das als initramfs aus dem RAM läuft. Es ist dieselbe Technik wie bei einem reinen „single copy“-Aufbau, bei dem jedes Update über dieses System läuft. Hier ist es der Ausnahmeweg: Normale Updates schreibt weiter das laufende System in die andere Partition. Das Update-System wird gebraucht, wenn A und B beide nicht starten, kein Netzwerk da ist oder ein Werksreset gewünscht ist.
+
+Kernel, Device Tree und initramfs liegen in der Boot-Partition, die kein Update verändert. U-Boot startet das Update-System statt A oder B, wenn ein Auslöser vorliegt. Erst angehen, wenn Schritt 5 bis 7 laufen, weil Bootskript, U-Boot-Umgebung und `recovery_status` gebraucht werden.
+
+Lesen:
+- In der Übersicht „Single copy – running as standalone image“ und „Double copy with fall-back“ vergleichen.
+- In `meta-swupdate` das Rezept `recipes-extended/images/swupdate-image.bb` mit `swupdate-image.inc`.
+- U-Boot-Dokumentation: Befehle `usb` und `bootz` (Aufruf mit initrd: `bootz <kernel> <initrd>:<größe> <fdt>`).
+- In `swupdate.inc` die Pakete `swupdate-usb` und `swupdate-client` (udev-Regel für USB-Sticks).
+
+Aufgaben:
+1. `swupdate-image` bauen. Format und Größe des Ergebnisses prüfen. Klären, ob das Update-System einen eigenen Kernel braucht oder denselben `zImage` nutzen kann.
+2. Kernel, Device Tree und initramfs für das Update-System in die Boot-Partition bringen (`IMAGE_BOOT_FILES` bzw. `.wks`). Prüfen, ob die Boot-Partition groß genug ist.
+3. Bootskript erweitern: Bei einem Auslöser das Update-System laden und mit `bootz` samt initrd starten. Auslöser:
+   - Variable `rescue=1`, gesetzt aus Linux mit `fw_setenv` (z. B. für einen Werksreset)
+   - USB-Stick mit einer Datei `update.swu` (in U-Boot `usb start` und `test -e usb 0:1 update.swu`)
+   - `recovery_status=in_progress`, also ein abgebrochenes Update
+4. Im Update-System den Stick einhängen und `update.swu` installieren, automatisch über ein Skript oder die udev-Regel von `swupdate-usb`. Danach die Auslöser zurücksetzen und neu starten.
+5. `sw-description` um eine Variante für das Update-System ergänzen, die **A und B** schreibt und `rootpart` auf A setzt. Danach sind beide Seiten gleich und gültig, wie nach einem Werksreset. Würde nur A geschrieben, bliebe ein kaputtes B zurück, und der Rückfall aus Schritt 7 würde später auf dieses B führen.
+6. A und B absichtlich zerstören (z. B. das erste MB mit `dd if=/dev/zero` überschreiben) und das Board nur mit dem USB-Stick wiederherstellen.
+
+Prüfen: Mit zerstörtem A und B startet das Board mit Stick ins Update-System, installiert das Update und startet danach normal aus A. Nach `fw_setenv rootpart 3` startet es auch aus B. Ohne Stick und ohne Auslöser startet es wie bisher A oder B.
+
+Lernfragen:
+1. Warum läuft das Update-System aus dem RAM und nicht von einer eigenen Partition?
+2. Was schützt das Update-System selbst davor, kaputtzugehen?
+3. Wann nimmt man „single copy“ als Regelweg, wann A/B, und warum kombiniert man beides?
+4. Woran erkennt U-Boot ein abgebrochenes Update, und was sollte es dann tun?
+5. Warum schreibt das Update-System A und B, das normale Update aber nur die jeweils andere Seite?
+
+## Schritt 9: Schreibgeschütztes Root-Dateisystem mit Overlay für /etc
 
 Bei einem A/B-System soll das laufende Root-Dateisystem unverändert bleiben. Sonst gehen Änderungen beim Wechsel auf die andere Seite verloren, oder A und B unterscheiden sich unbemerkt. Erst angehen, wenn Schritt 6 und 7 stabil laufen.
 
@@ -196,7 +228,7 @@ Lernfragen:
 2. Warum verdeckt eine geänderte Datei im Overlay die neue Version aus dem Update, und welche Strategien gibt es dagegen?
 3. Wann reicht ein Overlay auf `/etc` nicht aus? Was würde dm-verity zusätzlich leisten?
 
-## Schritt 9: Signierte Updates
+## Schritt 10: Signierte Updates
 
 Lesen:
 - „Update images from verified source“.
@@ -213,31 +245,32 @@ Lernfragen:
 1. Was genau wird signiert: die ganze `.swu` oder nur `sw-description`? Warum reicht das?
 2. Wie würdest du einen Schlüssel austauschen, ohne Geräte im Feld zu verlieren?
 
-## Schritt 10: Umzug ins eMMC
+## Schritt 11: Umzug ins eMMC
 
-Erst wenn Schritt 1 bis 9 auf der SD-Karte laufen.
+Erst wenn Schritt 1 bis 10 auf der SD-Karte laufen.
 
-Lesen: Nichts Neues. Deine eigenen Abschnitte 19 bis 24 in `docs/anleitung.md` noch einmal durchgehen und alle Stellen markieren, an denen `mmcblk0` oder `mmc 0` fest steht.
+Lesen: Nichts Neues. Deine eigenen Abschnitte 19 bis 25 in `docs/anleitung.md` noch einmal durchgehen und alle Stellen markieren, an denen `mmcblk0` oder `mmc 0` fest steht.
 
 Aufgaben:
 1. Größe des eMMC prüfen (`lsblk`, meist 4 GB). Partitionsgrößen in der `.wks` anpassen.
 2. Gerätenamen unterscheiden: SD-Karte `mmcblk0` / U-Boot `mmc 0`, eMMC `mmcblk1` / U-Boot `mmc 1`. Bootskript, `fw_env.config`, `sw-description` und das Gerät für das `/etc`-Overlay so schreiben, dass sie das Gerät nicht fest eintragen, oder ein eigenes Image für das eMMC bauen.
 3. Von der SD-Karte booten, das `.wic` per `scp` aufs Board kopieren und mit `bmaptool` oder `dd` auf `/dev/mmcblk1` schreiben. Dabei werden auch `MLO` und `u-boot.img` im eMMC ersetzt. Vorher sicherstellen, dass die neue Boot-Partition sie enthält.
-4. SD-Karte entfernen und starten.
+4. Das Update-System aus Schritt 8 liegt mit in der Boot-Partition des eMMC. Prüfen, dass U-Boot den USB-Stick auch ohne SD-Karte findet.
+5. SD-Karte entfernen und starten.
 
-Prüfen: Board startet ohne Karte aus dem eMMC, ein A/B-Update über den Browser klappt, der Rückfall aus Schritt 7 klappt.
+Prüfen: Board startet ohne Karte aus dem eMMC, ein A/B-Update über den Browser klappt, der Rückfall aus Schritt 7 klappt, die Rettung per USB-Stick aus Schritt 8 klappt.
 
 Lernfragen:
 1. In welcher Reihenfolge sucht U-Boot jetzt nach Bootmedien, und was passiert, wenn eine alte SD-Karte steckt?
 2. Wie würdest du ein Gerät ohne Karte und ohne Netzwerk retten?
 
-## Schritt 11 (optional): Weiterführend
+## Schritt 12 (optional): Weiterführend
 
 - Pre- und Post-Install-Skripte (`scripts` in `sw-description`), z. B. Konfiguration nach `/data` migrieren.
 - hawkBit-Server in Docker und SWUpdate im Suricatta-Modus: Das Board holt Updates selbst ab.
 - Delta-Updates (`delta`-Handler) und Vergleich der Größe.
 - Verschlüsselte Images.
-- dm-verity: Das Root-Dateisystem wird beim Lesen gegen eine signierte Prüfsumme geprüft. Passt zu Schritt 9.
+- dm-verity: Das Root-Dateisystem wird beim Lesen gegen eine signierte Prüfsumme geprüft. Passt zu Schritt 10.
 
 ## Übernahme in die Anleitung
 
@@ -252,8 +285,9 @@ Nach jedem Schritt einen Abschnitt in `docs/anleitung.md` ergänzen, fortlaufend
 | 5 | 20. A/B-Layout |
 | 6 | 21. A/B-Update |
 | 7 | 22. Rückfall mit Bootzähler |
-| 8 | 23. Schreibgeschütztes Root-Dateisystem mit Overlay |
-| 9 | 24. Signierte Updates |
-| 10 | 25. Umzug ins eMMC |
+| 8 | 23. Update-System mit USB-Stick |
+| 9 | 24. Schreibgeschütztes Root-Dateisystem mit Overlay |
+| 10 | 25. Signierte Updates |
+| 11 | 26. Umzug ins eMMC |
 
-Nach Schritt 10 außerdem Abschnitt 7 anpassen (Booten ohne Karte) und das Ziel oben in der Anleitung ergänzen.
+Nach Schritt 11 außerdem Abschnitt 7 anpassen (Booten ohne Karte) und das Ziel oben in der Anleitung ergänzen.
