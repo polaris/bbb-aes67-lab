@@ -10,5 +10,3 @@ part /uboot --source bootimg_partition --ondisk mmcblk0 --fstype=vfat --label bo
 part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_a --align 4 --fixed-size 256 --use-uuid
 part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_b --align 4 --fixed-size 256 --use-uuid
 part /data --ondisk mmcblk0 --fstype=ext4 --label data --align 4 --size 128 --use-uuid
-
-bootloader --append="console=ttyS0,115200"
