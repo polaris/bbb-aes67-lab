@@ -849,7 +849,7 @@ grep -rE "^CONFIG_ENV_(SIZE|IS_IN_FAT|FAT_)|^CONFIG_SYS_REDUNDAND|^CONFIG_BOOTCO
 
 U-Boot nummeriert die Controller: `mmc 0` ist der microSD-Steckplatz (Linux `mmcblk0`), `mmc 1` das eMMC (Linux `mmcblk1`). U-Boot selbst kommt aus dem eMMC, liest seine Umgebung aber fest von der SD-Karte. Ohne Karte startet es mit der eingebauten Umgebung und kann nichts speichern. Für ein System ganz im eMMC muss U-Boot neu gebaut werden.
 
-In Linux ist `mmc 0:1` die Partition `/dev/mmcblk0p1`, eingehängt unter `/boot`. Die Umgebung ist also die Datei `/boot/uboot.env`.
+In Linux ist `mmc 0:1` die Partition `/dev/mmcblk0p1`, eingehängt unter `/uboot` (Abschnitt 20; mit dem Standard-Layout von `beaglebone-yocto` unter `/boot`). Die Umgebung ist also die Datei `/uboot/uboot.env`.
 
 ### fw_env.config
 
@@ -862,7 +862,7 @@ In Linux ist `mmc 0:1` die Partition `/dev/mmcblk0p1`, eingehängt unter `/boot`
 Sektorgröße und Anzahl gelten nur für rohen NOR- und NAND-Flash. Zwei Zeilen bedeuten eine redundante Umgebung. Hier genügt eine Zeile:
 
 ```
-/boot/uboot.env 0x0 0x20000
+/uboot/uboot.env 0x0 0x20000
 ```
 
 Die Größe muss genau zu `CONFIG_ENV_SIZE` passen, sonst stimmt die CRC nicht.
@@ -942,6 +942,177 @@ Die Fehler `Cannot persistently store … update state` erscheinen nicht mehr.
 - Nur eine Kopie der Umgebung, dazu in einer FAT-Datei. Ein Stromausfall beim Schreiben kann sie zerstören. U-Boot fällt dann auf die eingebaute Umgebung zurück, gesetzte Variablen sind weg.
 - Der Bootzähler liegt im Register der Echtzeituhr. Linux kann ihn mit `fw_setenv` nicht zurücksetzen.
 - Die Umgebung hängt an der SD-Karte.
+
+## 20. A/B-Layout
+
+Für ein A/B-Update braucht die Karte zwei Root-Partitionen. Eine läuft, die andere wird beim Update beschrieben. U-Boot muss wissen, welche es starten soll. Das entscheidet eine Variable in der U-Boot-Umgebung, die Linux mit `fw_setenv` setzen kann (Abschnitt 19).
+
+### Layout
+
+| Nr. | Label | Typ | Größe | Eingehängt | Inhalt |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `boot` | FAT, Boot-Flag | 64 MiB | `/uboot` | `MLO`, `u-boot.img`, `boot.scr`, `uboot.env` |
+| 2 | `root_a` | ext4 | 256 MiB | `/` wenn A läuft | Linux A, Kernel und Device Tree in `/boot` |
+| 3 | `root_b` | ext4 | 256 MiB | `/` wenn B läuft | Linux B, ebenso |
+| 4 | `data` | ext4 | 128 MiB | `/data` | Daten, die ein Update überleben |
+
+Vier primäre Partitionen sind das Maximum einer MBR-Partitionstabelle. U-Boot selbst liegt in `boot` und gehört weder zu A noch zu B. Ein Update tauscht nur das Root-Dateisystem samt Kernel.
+
+Kernel und Device Tree müssen im Root-Dateisystem liegen. Sonst würde ein Update von B den Kernel von A weiterverwenden. Bei `beaglebone-yocto` ist das schon so: `MACHINE_ESSENTIAL_EXTRA_RDEPENDS += "kernel-image kernel-devicetree"` in der Maschinenkonfiguration bringt `/boot/zImage` und die `.dtb`-Dateien ins Image.
+
+### wks-Datei
+
+wic sucht `.wks`-Dateien in `<Layer>/files/wic/` (nicht `<Layer>/wic/`). `meta-bbb-swupdate/files/wic/bbb-image.wks`:
+
+```
+part /uboot --source bootimg_partition --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4 --fixed-size 64 --use-uuid
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_a --align 4 --fixed-size 256 --use-uuid
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_b --align 4 --fixed-size 256 --use-uuid
+part /data --ondisk mmcblk0 --fstype=ext4 --label data --align 4 --size 128 --use-uuid
+```
+
+- `bootimg_partition` kopiert die Dateien aus `IMAGE_BOOT_FILES` in die FAT-Partition.
+- `--active` setzt das Boot-Flag. U-Boot sucht Bootdateien nur auf Partitionen mit diesem Flag.
+- `--source rootfs` ohne Einhängepunkt: A und B bekommen dasselbe Root-Dateisystem. So startet auch B von Anfang an.
+- `--fixed-size 256` statt `--size`: Beide Seiten bleiben gleich groß, auch wenn das Image wächst. Ein Update muss später in 256 MiB passen.
+- `--use-uuid`: Die Partitionen sind über `PARTUUID` ansprechbar, bei MBR `<Disk-ID>-<Nr.>`, hier `076c4a2a-02` und `076c4a2a-03`.
+
+wic trägt `/uboot` und `/data` in `/etc/fstab` ein, legt die Verzeichnisse aber nicht an. Ohne Verzeichnis hängt Linux die Partition nicht ein.
+
+Warum `/uboot` und nicht `/boot`: Im Root-Dateisystem liegt der Kernel unter `/boot`. Eine dort eingehängte FAT-Partition würde ihn verdecken. Deshalb zeigt `fw_env.config` jetzt auf `/uboot/uboot.env`:
+
+```
+/uboot/uboot.env 0x0 0x20000
+```
+
+`meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend`:
+
+```
+IMAGE_INSTALL:append = " swupdate swupdate-www u-boot-env libubootenv-bin hwrevision"
+
+WKS_FILE = "bbb-image.wks"
+
+create_directories() {
+    install -d ${IMAGE_ROOTFS}/uboot
+    install -d ${IMAGE_ROOTFS}/data
+}
+ROOTFS_POSTPROCESS_COMMAND += "create_directories"
+
+IMAGE_BOOT_FILES:append = " boot.scr"
+```
+
+`ROOTFS_POSTPROCESS_COMMAND` wird ohne `;` erweitert. `IMAGE_BOOT_FILES` gehört ins Image, nicht ins U-Boot-Rezept, weil wic die Variable beim Bau des Images liest.
+
+### Bootskript statt extlinux.conf
+
+Bisher hat `bootimg_partition` mit `--sourceparams="loader=u-boot"` eine `extlinux.conf` erzeugt. Darin steht `root=` fest, genommen von der ersten Partition mit dem Einhängepunkt `/`. Für A/B taugt das nicht. Ein U-Boot-Skript entscheidet stattdessen beim Start.
+
+`meta-bbb-swupdate/recipes-bsp/u-boot/files/boot.cmd`:
+
+```
+# rootpart: 2 = root_a, 3 = root_b (gesetzt von SWUpdate oder fw_setenv)
+
+if test -z "${rootpart}"; then
+    setenv rootpart 2
+fi
+
+echo "A/B: booting from ${devtype} ${devnum}:${rootpart}"
+
+load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/zImage
+load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
+
+part uuid ${devtype} ${devnum}:${rootpart} rootuuid
+setenv bootargs console=ttyS0,115200 root=PARTUUID=${rootuuid} rootwait
+
+bootz ${kernel_addr_r} - ${fdt_addr_r}
+```
+
+Die Variablen kommen aus drei Quellen:
+
+| Quelle | Variablen |
+| --- | --- |
+| eingebaute Standard-Umgebung | `kernel_addr_r`, `fdt_addr_r` |
+| zur Laufzeit gesetzt | `devtype`, `devnum` (von `distro_bootcmd` beim Durchsuchen der Geräte), `fdtfile` (von `findfdt` nach der Board-Erkennung), `rootuuid` (vom Skript selbst) |
+| gespeichert in `uboot.env` | `rootpart` |
+
+- `load` erkennt das Dateisystem selbst (ext4) und folgt dem symbolischen Link `/boot/zImage`.
+- `part uuid` liest die `PARTUUID` der gewählten Partition. Damit stimmt `root=` immer mit der Partition überein, von der der Kernel kam.
+- `bootz <Kernel> - <Device Tree>`: Der Bindestrich steht für „keine Initramfs“.
+- Fehlt `rootpart`, startet A. Nach dem Beschreiben der Karte ist die Variable nicht gesetzt.
+
+`meta-bbb-swupdate/recipes-bsp/u-boot/u-boot_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://fw_env.config file://boot.cmd"
+
+UBOOT_ENV = "boot"
+UBOOT_ENV_SUFFIX = "scr"
+```
+
+Mit `UBOOT_ENV_SUFFIX = "scr"` übersetzt das Rezept (`u-boot.inc`) die Datei `boot.cmd` mit `mkimage -T script` in `boot.scr` und legt sie in `tmp/deploy/images/beaglebone-yocto/`. `mkimage` setzt einen 64-Byte-Kopf mit Prüfsumme davor. U-Boot führt nur Skripte mit gültigem Kopf aus. `boot.cmd` direkt auf die Karte zu kopieren, funktioniert also nicht.
+
+### Suchreihenfolge von U-Boot
+
+Dieses U-Boot startet über `distro_bootcmd`. Pro Gerät und Partition mit Boot-Flag sucht es in den Verzeichnissen `/` und `/boot/`:
+
+1. `extlinux/extlinux.conf`
+2. `boot.scr.uimg`, dann `boot.scr`
+
+Eine vorhandene `extlinux.conf` gewinnt. Deshalb muss `loader=u-boot` aus der wks-Datei raus, und `root_a` verliert den Einhängepunkt `/`. Ohne `/` würde wic ohnehin kein `root=` in eine `extlinux.conf` schreiben können.
+
+### Skript von Hand testen
+
+Jede Zeile lässt sich vorher am U-Boot-Prompt ausprobieren. `devtype`, `devnum` und `fdtfile` sind dort leer, weil `distro_bootcmd` noch nicht gelaufen ist. Zuerst setzen:
+
+```
+=> setenv devtype mmc
+=> setenv devnum 0
+=> run findfdt
+=> printenv fdtfile
+fdtfile=am335x-boneblack.dtb
+```
+
+Danach die Zeilen aus `boot.cmd` einzeln eingeben. Ohne diese Vorbereitung meldet `load` nur `Bad device specification`.
+
+### Prüfen
+
+Image bauen und Karte beschreiben (Abschnitt 6). Danach fehlt `uboot.env` wieder. Deshalb zuerst in U-Boot `saveenv`, dann `boot`.
+
+Im Bootlog:
+
+```
+Found U-Boot script /boot.scr
+581 bytes read in 2 ms (283.2 KiB/s)
+## Executing script at 80000000
+A/B: booting from mmc 0:2
+```
+
+Steht dort `Found /extlinux/extlinux.conf`, liegt noch eine alte `extlinux.conf` auf der Karte.
+
+Auf dem Board:
+
+```bash
+cat /proc/cmdline        # console=ttyS0,115200 root=PARTUUID=076c4a2a-02 rootwait
+ls /uboot                # boot.scr, keine extlinux.conf
+mount | grep -E "uboot|data"
+fw_printenv rootpart     # nicht gesetzt
+```
+
+Auf B umschalten:
+
+```bash
+fw_setenv rootpart 3
+reboot
+```
+
+Im Bootlog steht jetzt `A/B: booting from mmc 0:3`, in `/proc/cmdline` `root=PARTUUID=076c4a2a-03`. Auch in B sind `/uboot` und `/data` eingehängt und `fw_setenv` funktioniert. Zurück mit `fw_setenv rootpart 2` und `reboot`.
+
+### Grenzen dieses Aufbaus
+
+- Ein falscher Wert in `rootpart` (z. B. `4` oder ein kaputtes B) lässt den Start scheitern. Einen automatischen Rückfall gibt es noch nicht (Abschnitt 22).
+- `zImage` und die `.dtb`-Dateien liegen weiterhin auch in `boot`, weil die Maschinenkonfiguration sie in `IMAGE_BOOT_FILES` aufführt. Das Skript benutzt sie nicht.
+- Die Umgebung liegt weiterhin als einzelne FAT-Datei auf der SD-Karte (Abschnitt 19).
 
 ## Quellen
 
