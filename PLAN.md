@@ -249,20 +249,31 @@ Lernfragen:
 
 Erst wenn Schritt 1 bis 10 auf der SD-Karte laufen.
 
-Lesen: Nichts Neues. Deine eigenen Abschnitte 19 bis 25 in `docs/anleitung.md` noch einmal durchgehen und alle Stellen markieren, an denen `mmcblk0` oder `mmc 0` fest steht.
+Lesen:
+- Deine eigenen Abschnitte 19 bis 25 in `docs/anleitung.md` noch einmal durchgehen und alle Stellen markieren, an denen `mmcblk0` oder `mmc 0` fest steht.
+- U-Boot-Dokumentation: „Environment Variables“, dort Speicherort im MMC (`CONFIG_ENV_IS_IN_MMC`, `CONFIG_ENV_OFFSET`, `CONFIG_ENV_OFFSET_REDUND`, `CONFIG_SYS_MMC_ENV_PART`) und `CONFIG_ENV_WRITEABLE_LIST`.
+- README von `libubootenv`: Verhalten bei ungültiger Umgebung und `/etc/u-boot-initial-env`.
+- Hilfe von `mkenvimage` (`mkenvimage -h`, aus `u-boot-tools-native`).
 
 Aufgaben:
-1. Größe des eMMC prüfen (`lsblk`, meist 4 GB). Partitionsgrößen in der `.wks` anpassen.
+1. Größe des eMMC prüfen (`cat /proc/partitions`, 3,66 GiB). Partitionsgrößen in der `.wks` anpassen.
 2. Gerätenamen unterscheiden: SD-Karte `mmcblk0` / U-Boot `mmc 0`, eMMC `mmcblk1` / U-Boot `mmc 1`. Bootskript, `fw_env.config`, `sw-description` und das Gerät für das `/etc`-Overlay so schreiben, dass sie das Gerät nicht fest eintragen, oder ein eigenes Image für das eMMC bauen.
-3. Von der SD-Karte booten, das `.wic` per `scp` aufs Board kopieren und mit `bmaptool` oder `dd` auf `/dev/mmcblk1` schreiben. Dabei werden auch `MLO` und `u-boot.img` im eMMC ersetzt. Vorher sicherstellen, dass die neue Boot-Partition sie enthält.
-4. Das Update-System aus Schritt 8 liegt mit in der Boot-Partition des eMMC. Prüfen, dass U-Boot den USB-Stick auch ohne SD-Karte findet.
-5. SD-Karte entfernen und starten.
+3. **Umgebung roh und redundant ins eMMC:** U-Boot per Konfigurations-Fragment von `CONFIG_ENV_IS_IN_FAT` auf `CONFIG_ENV_IS_IN_MMC` umstellen, mit zwei Kopien (`CONFIG_SYS_REDUNDAND_ENVIRONMENT`). Ort festlegen: die Boot-Bereiche des eMMC (`mmcblk1boot0`/`boot1`) oder ein freier Bereich vor der ersten Partition. Darauf achten, dass weder `MLO` noch Partitionen überschrieben werden. `fw_env.config` auf zwei Zeilen mit Gerät und Versatz umstellen. Die FAT-Partition muss Linux danach nicht mehr einhängen.
+4. **Erste Umgebung beim Bauen erzeugen:** Mit `mkenvimage` aus `u-boot-initial-env` (erzeugt der U-Boot-Build aus der einkompilierten Umgebung) plus `rootpart=2` eine gültige Umgebung bauen und an die richtige Stelle ins Image bringen. Ziel: Nach dem Beschreiben ist kein `saveenv` mehr nötig.
+5. **Ohne gespeicherte Umgebung sicher starten:** Umgebung absichtlich löschen (beide Kopien mit `dd if=/dev/zero`). U-Boot muss mit der eingebauten Umgebung A starten, und das erste `fw_setenv` in Linux muss eine gültige Umgebung anlegen.
+6. **Gespeicherte Umgebung einschränken:** Mit `CONFIG_ENV_WRITEABLE_LIST` nur die Variablen aus dem Speicher übernehmen, die Linux setzen darf (`rootpart`, `ustate`, `recovery_status`, Bootzähler, `rescue`). Testen, dass ein von Linux gesetztes `bootargs` wirkungslos bleibt.
+7. Von der SD-Karte booten, das `.wic` per `scp` aufs Board kopieren und mit `bmaptool` oder `dd` auf `/dev/mmcblk1` schreiben. Dabei werden auch `MLO` und `u-boot.img` im eMMC ersetzt. Vorher sicherstellen, dass die neue Boot-Partition sie enthält.
+8. Das Update-System aus Schritt 8 liegt mit in der Boot-Partition des eMMC. Prüfen, dass U-Boot den USB-Stick auch ohne SD-Karte findet.
+9. SD-Karte entfernen und starten.
 
-Prüfen: Board startet ohne Karte aus dem eMMC, ein A/B-Update über den Browser klappt, der Rückfall aus Schritt 7 klappt, die Rettung per USB-Stick aus Schritt 8 klappt.
+Prüfen: Board startet ohne Karte aus dem eMMC, ohne dass jemals `saveenv` ausgeführt wurde. Ein A/B-Update über den Browser klappt, der Rückfall aus Schritt 7 klappt, die Rettung per USB-Stick aus Schritt 8 klappt. Nach Löschen der Umgebung startet das Board weiter aus A.
 
 Lernfragen:
 1. In welcher Reihenfolge sucht U-Boot jetzt nach Bootmedien, und was passiert, wenn eine alte SD-Karte steckt?
 2. Wie würdest du ein Gerät ohne Karte und ohne Netzwerk retten?
+3. Warum gehören MAC-Adresse und Seriennummer nicht in die U-Boot-Umgebung?
+4. Was könnte ein Angreifer mit Zugriff auf `fw_setenv` ohne `CONFIG_ENV_WRITEABLE_LIST` erreichen?
+5. Warum muss `u-boot-initial-env` aus demselben U-Boot-Build stammen wie der Bootloader?
 
 ## Schritt 12 (optional): Weiterführend
 
