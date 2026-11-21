@@ -7,3 +7,5 @@ create_directories() {
     install -d ${IMAGE_ROOTFS}/data
 }
 ROOTFS_POSTPROCESS_COMMAND += "create_directories"
+
+IMAGE_BOOT_FILES:append = " boot.scr"

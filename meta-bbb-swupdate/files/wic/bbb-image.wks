@@ -1,9 +1,13 @@
 # short-description: A/B-Layout: boot, root_a, root_b, data
-# long-description: A/B-Layout: boot, root_a, root_b, data
-# Boot files are located in the first vfat partition.
+# long-description: Vier primäre Partitionen. boot (FAT) mit MLO, u-boot.img, boot.scr und uboot.env, root_a und root_b mit je einem Root-Dateisystem samt Kernel und Device Tree in /boot, data für Daten, die ein Update überleben.
+#
+# boot.scr startet die Partition aus der U-Boot-Variable rootpart
+# (2 = root_a, 3 = root_b) und setzt root= selbst. Deshalb hat keine
+# Partition den Einhängepunkt "/" und bootimg_partition erzeugt keine
+# extlinux.conf (kein loader=u-boot).
 
-part /uboot --source bootimg_partition --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4 --fixed-size 64 --sourceparams="loader=u-boot" --use-uuid
-part / --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_a --align 4 --fixed-size 256 --use-uuid
+part /uboot --source bootimg_partition --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4 --fixed-size 64 --use-uuid
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_a --align 4 --fixed-size 256 --use-uuid
 part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_b --align 4 --fixed-size 256 --use-uuid
 part /data --ondisk mmcblk0 --fstype=ext4 --label data --align 4 --size 128 --use-uuid
 
