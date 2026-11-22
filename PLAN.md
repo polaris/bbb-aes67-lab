@@ -166,8 +166,9 @@ Aufgaben:
 2. `bootlimit`, `upgrade_available` und `altbootcmd` so setzen, dass nach drei misslungenen Starts die alte Partition bootet.
 3. Nach einem erfolgreichen Start bestätigt ein Dienst auf dem Board das Update (`upgrade_available=0`, `bootcount=0`). Überlegen, was „erfolgreich“ heißt, z. B. `ptp4l` erreicht `SLAVE`.
 4. Absichtlich ein kaputtes Update bauen (z. B. Kernel mit `init=/bin/false`) und einspielen.
+5. **Update-Ablauf absichern:** Nach einem erfolgreichen Update startet das Board selbst neu (`-p` von SWUpdate oder Option der Webseite). Solange ein Update nicht bestätigt ist (`upgrade_available=1`), wird ein weiteres abgelehnt. Klären, an welcher Stelle diese Prüfung hingehört. Hintergrund: Nach Update 1 zeigt `rootpart` schon auf die Seite, die ein zweites Update ohne Neustart überschreiben würde. Ein Stromausfall dabei würde das halb geschriebene System starten.
 
-Prüfen: Das kaputte Update startet nicht, nach dem Bootlimit läuft wieder die alte Version. Ein gutes Update wird bestätigt und bleibt.
+Prüfen: Das kaputte Update startet nicht, nach dem Bootlimit läuft wieder die alte Version. Ein gutes Update wird bestätigt und bleibt. Ein zweites Update vor der Bestätigung wird abgelehnt.
 
 Lernfragen:
 1. Wer zählt beim Start hoch, und wer setzt zurück?
