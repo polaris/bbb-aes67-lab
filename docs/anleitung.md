@@ -977,7 +977,7 @@ part /data --ondisk mmcblk0 --fstype=ext4 --label data --align 4 --size 128 --us
 - `--fixed-size 256` statt `--size`: Beide Seiten bleiben gleich groß, auch wenn das Image wächst. Ein Update muss später in 256 MiB passen.
 - `--use-uuid`: Die Partitionen sind über `PARTUUID` ansprechbar, bei MBR `<Disk-ID>-<Nr.>`, hier `076c4a2a-02` und `076c4a2a-03`.
 
-wic trägt `/uboot` und `/data` in `/etc/fstab` ein, legt die Verzeichnisse aber nicht an. Ohne Verzeichnis hängt Linux die Partition nicht ein.
+wic trägt `/uboot` und `/data` in `/etc/fstab` ein, legt die Verzeichnisse aber nicht an. Ohne Verzeichnis hängt Linux die Partition nicht ein. Für Updates reicht das nicht. Abschnitt 21 ersetzt diese Einträge durch eine eigene `fstab`.
 
 Warum `/uboot` und nicht `/boot`: Im Root-Dateisystem liegt der Kernel unter `/boot`. Eine dort eingehängte FAT-Partition würde ihn verdecken. Deshalb zeigt `fw_env.config` jetzt auf `/uboot/uboot.env`:
 
@@ -1113,6 +1113,324 @@ Im Bootlog steht jetzt `A/B: booting from mmc 0:3`, in `/proc/cmdline` `root=PAR
 - Ein falscher Wert in `rootpart` (z. B. `4` oder ein kaputtes B) lässt den Start scheitern. Einen automatischen Rückfall gibt es noch nicht (Abschnitt 22).
 - `zImage` und die `.dtb`-Dateien liegen weiterhin auch in `boot`, weil die Maschinenkonfiguration sie in `IMAGE_BOOT_FILES` aufführt. Das Skript benutzt sie nicht.
 - Die Umgebung liegt weiterhin als einzelne FAT-Datei auf der SD-Karte (Abschnitt 19).
+
+## 21. A/B-Update
+
+Das laufende System schreibt ein neues Root-Dateisystem auf die andere Seite und stellt `rootpart` um. Nach dem Neustart läuft die neue Version. Die alte Seite bleibt unberührt.
+
+### Versionen an einer Stelle
+
+Zwei Werte werden in mehreren Rezepten gebraucht. Eine Variable in einem Rezept gilt nur dort. Werte für alle Rezepte gehören in eine Konfigurationsdatei, hier in `layer.conf`:
+
+| Variable | Datei | Verwendet in |
+| --- | --- | --- |
+| `BBB_VERSION ?= "0.1.0"` | `meta-bbb/conf/layer.conf` | `/etc/bbb-version`, `version` in `sw-description` |
+| `HW_REVISION ?= "1.0"` | `meta-bbb-swupdate/conf/layer.conf` | `/etc/hwrevision`, `hardware-compatibility` in `sw-description` |
+
+`?=` lässt einen Testbau mit anderem Wert über `local.conf` zu. In `hwrevision.bb` entfällt die eigene Zuweisung.
+
+`/etc/bbb-version` gehört zum Image, nicht zu SWUpdate. `meta-bbb/recipes-core/images/bbb-image.bb`:
+
+```
+add_bbb_version_to_rootfs() {
+    echo "${BBB_VERSION}" > ${IMAGE_ROOTFS}${sysconfdir}/bbb-version
+}
+ROOTFS_POSTPROCESS_COMMAND += "add_bbb_version_to_rootfs"
+```
+
+Weil die Funktion `BBB_VERSION` benutzt, baut BitBake das Root-Dateisystem neu, sobald sich die Version ändert (`image.bbclass` macht die Funktionen in `ROOTFS_POSTPROCESS_COMMAND` zu Abhängigkeiten von `do_rootfs`). In einem Image-Rezept ist das Ziel `${IMAGE_ROOTFS}`, nicht `${D}`.
+
+`/etc/timestamp` und `/etc/version` taugen nicht als Version. Für reproduzierbare Builds enthalten sie den festen Wert `REPRODUCIBLE_TIMESTAMP_ROOTFS` aus `bitbake.conf`, ein Datum im Jahr 2018.
+
+### Das Update-Image
+
+`bbb-image` muss zusätzlich ein einzelnes Root-Dateisystem liefern. `meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend`, ergänzt:
+
+```
+IMAGE_FSTYPES += "ext4.gz"
+
+# ext4 immer 256 MiB, wie auf der frischen Karte (Werte in KiB)
+IMAGE_ROOTFS_SIZE = "262144"
+# Bau bricht ab, wenn das Image nicht mehr in die Partition passt
+IMAGE_ROOTFS_MAXSIZE = "262144"
+```
+
+Ohne `IMAGE_ROOTFS_SIZE` ist das ext4 nur so groß wie der Inhalt plus Reserve (hier 92 MiB). Nach einem Update wäre die Seite dann kleiner als nach dem Beschreiben der Karte. Leere Blöcke komprimieren gut: Die `.ext4.gz` wächst dadurch nur von 33,8 auf 34,0 MB. `IMAGE_ROOTFS_MAXSIZE` verhindert, dass ein zu großes Image beim Update über das Ende der Partition hinaus nach `data` schreibt. BitBake kennt keine Kommentare am Zeilenende, sie stehen deshalb in eigenen Zeilen.
+
+`meta-bbb-swupdate/recipes-core/images/update-image.bb`:
+
+```
+SUMMARY = "Update-Image für das AES67-Labor"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
+SRC_URI = "file://sw-description"
+
+IMAGE_DEPENDS = "bbb-image"
+
+SWUPDATE_IMAGES = "bbb-image"
+SWUPDATE_IMAGES_FSTYPES[bbb-image] = ".rootfs.ext4.gz"
+
+inherit swupdate
+
+# swupdate.bbclass macht die @@…@@-Variablen in sw-description nicht zu
+# Abhängigkeiten von do_swuimage (swupdate-image.bbclass tut es)
+do_swuimage[vardeps] += "${@swupdate_find_bitbake_variables(d)}"
+```
+
+- `IMAGE_DEPENDS` lässt `do_swuimage` warten, bis `bbb-image` fertig ist.
+- Die Klasse sucht in `tmp/deploy/images/beaglebone-yocto/` nach `<Image><IMAGE_MACHINE_SUFFIX><FSTYPES>`. Seit es `IMAGE_NAME_SUFFIX = ".rootfs"` gibt, muss das `.rootfs` in `SWUPDATE_IMAGES_FSTYPES` stehen. Das Beispiel `".ext4.gz"` in der README von meta-swupdate ist veraltet und endet mit `swupdate cannot find image file`.
+- Die letzte Zeile schließt eine Lücke in `swupdate.bbclass`: Ohne sie baut BitBake die `.swu` nicht neu, wenn sich nur `HW_REVISION` ändert, und packt eine veraltete `sw-description` ein. Dieselbe Zeile steht auch in `update-hello.bb`. Prüfen mit `bitbake-getvar -r update-image -f vardeps --value do_swuimage`, Ergebnis `HW_REVISION BBB_VERSION MACHINE`.
+
+`meta-bbb-swupdate/recipes-core/images/files/sw-description`:
+
+```
+software =
+{
+    version = "@@BBB_VERSION@@";
+    description = "Update";
+    hardware-compatibility: [ "@@HW_REVISION@@" ];
+
+    stable:
+    {
+        root_a:
+        {
+            images: (
+                {
+                    filename = "bbb-image-@@MACHINE@@.rootfs.ext4.gz";
+                    device = "/dev/mmcblk0p2";
+                    type = "raw";
+                    compressed = "zlib";
+                }
+            );
+            bootenv: (
+                {
+                    name = "rootpart";
+                    value = "2";
+                }
+            );
+        };
+        root_b:
+        {
+            images: (
+                {
+                    filename = "bbb-image-@@MACHINE@@.rootfs.ext4.gz";
+                    device = "/dev/mmcblk0p3";
+                    type = "raw";
+                    compressed = "zlib";
+                }
+            );
+            bootenv: (
+                {
+                    name = "rootpart";
+                    value = "3";
+                }
+            );
+        };
+    };
+};
+```
+
+- `stable` ist die Gruppe, `root_a` und `root_b` sind die Collections. Der Name sagt, wohin geschrieben wird. `swupdate -e stable,root_b` installiert nur, was unter `stable.root_b` steht.
+- `filename` muss genau dem Namen der Datei in der `.swu` entsprechen. `@@MACHINE@@` ergibt `beaglebone-yocto`.
+- Ohne `compressed = "zlib"` schreibt `raw` die gz-Daten unverändert auf die Partition. Die Installation meldet Erfolg, die Seite startet aber nicht. `compressed = true` ist veraltet.
+- Das Image ist nur einmal in der `.swu`, beide Collections verweisen darauf.
+- `bootenv` setzt `rootpart` erst nach erfolgreichem Schreiben.
+
+Inhalt prüfen, ohne Dateien im Verzeichnis zurückzulassen (eine alte ausgepackte Kopie führt leicht in die Irre):
+
+```bash
+cd tmp/deploy/images/beaglebone-yocto
+cpio -it < update-image-beaglebone-yocto.rootfs.swu
+cpio -i --to-stdout sw-description < update-image-beaglebone-yocto.rootfs.swu
+```
+
+### Bootloader-Handler einschalten
+
+Erster Versuch:
+
+```
+ERROR parser.c : parse : 209 : bootloader support absent but sw-description has bootloader section!
+```
+
+`CONFIG_UBOOT` (Zugriff auf die Umgebung, reicht für `ustate` und `recovery_status`) und `CONFIG_BOOTLOADERHANDLER` (Handler für `bootenv` in `sw-description`) sind zwei Optionen. Die zweite ist in der defconfig aus. Fragment wie `hash.cfg` in Abschnitt 16, `meta-bbb-swupdate/recipes-support/swupdate/files/bootloaderhandler.cfg`:
+
+```
+CONFIG_BOOTLOADERHANDLER=y
+```
+
+`swupdate_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://hash.cfg file://bootloaderhandler.cfg"
+```
+
+Danach listet `swupdate -v` unter „Registered global handlers“ zusätzlich `uboot` und `bootloader`. Der Fehler kam in der ersten Phase, beim Prüfen. Es wurde nichts geschrieben.
+
+### fstab ins Root-Dateisystem
+
+Nach dem ersten Update startete B, aber `fw_printenv` meldete `Cannot initialize environment`. In B waren `/uboot` und `/data` nicht eingehängt.
+
+Grund: wic ergänzt die `fstab` nur in der Kopie des Root-Dateisystems, die es für die `.wic` anlegt (Abschnitt 20). Die `.ext4.gz` entsteht ohne wic und enthält die unveränderte `fstab` aus `base-files`. Solange A und B aus der `.wic` kamen, fiel das nicht auf. **Was im Update-Image steht, muss für sich allein vollständig sein.** Alles, was erst beim Erstellen der Karte dazukommt, fehlt nach dem ersten Update.
+
+Eigene `fstab` über `base-files`. `meta-bbb-swupdate/recipes-core/base-files/base-files_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+```
+
+`file://fstab` steht schon in `SRC_URI` des Originalrezepts. `FILESEXTRAPATHS` sorgt nur dafür, dass die eigene Datei zuerst gefunden wird. `meta-bbb-swupdate/recipes-core/base-files/files/fstab` ist die Originaldatei plus zwei Zeilen:
+
+```
+/dev/mmcblk0p1       /uboot               vfat       defaults                           0  0
+/dev/mmcblk0p4       /data                ext4       defaults                           0  0
+```
+
+`LABEL=boot` funktioniert hier nicht: Die alte FAT-Partition im eMMC trägt dasselbe Label, und `mount` hängte zufällig `/dev/mmcblk1p1` ein. Die festen Namen gelten nur für die SD-Karte, Schritt 11 des Plans löst das allgemein.
+
+In der `.wks` bekommen `root_a` und `root_b` zusätzlich `--no-fstab-update`, sonst stünden die Einträge in der `.wic` doppelt:
+
+```
+part --source rootfs ... --label root_a ... --use-uuid --no-fstab-update
+part --source rootfs ... --label root_b ... --use-uuid --no-fstab-update
+```
+
+Die Option fehlt in der Online-Referenz zu Kickstart, steht aber in `wic help kickstart`. Sie gehört an die Partitionen, deren `fstab` wic ändern würde, also an die mit `--source rootfs`.
+
+Prüfen am PC, ohne die Karte zu beschreiben:
+
+```bash
+zcat bbb-image-beaglebone-yocto.rootfs.ext4.gz > /tmp/b.ext4
+debugfs -R "cat /etc/fstab" /tmp/b.ext4 | tail -2
+rm /tmp/b.ext4
+```
+
+### Seite automatisch wählen
+
+Die Auswahl hängt von der laufenden Seite ab. Läuft A, muss `-e stable,root_b` gewählt werden. Die laufende Seite steht in `/proc/cmdline` (`root=PARTUUID=…-02`). `rootpart` taugt dafür nicht: Nach dem Beschreiben der Karte ist es nicht gesetzt, und nach einem Update zeigt es schon vor dem Neustart auf die neue Seite.
+
+Eigenes Rezept `meta-bbb-swupdate/recipes-support/swupdate-ab-select/swupdate-ab-select.bb`:
+
+```
+SUMMARY = "Automatische Auswahl der A/B-Seite für SWUpdate"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
+SRC_URI = "file://updatepartdetect file://30-ab-select"
+
+# Keine Quellen zum Auspacken, nur einzelne Dateien
+S = "${UNPACKDIR}"
+
+inherit allarch
+
+do_configure[noexec] = "1"
+do_compile[noexec] = "1"
+
+do_install() {
+    install -d ${D}${bindir}
+    install -m 0755 ${UNPACKDIR}/updatepartdetect ${D}${bindir}
+
+    install -d ${D}${libdir}/swupdate/conf.d
+    install -m 0644 ${UNPACKDIR}/30-ab-select ${D}${libdir}/swupdate/conf.d/
+}
+
+FILES:${PN} += "${libdir}/swupdate/conf.d/30-ab-select"
+RDEPENDS:${PN} += "swupdate"
+```
+
+- `allarch`: Shell-Skripte sind für alle Architekturen gleich. Die Klasse setzt auch `INHIBIT_DEFAULT_DEPS`.
+- `install -d` ist nötig, weil `${D}` für jedes Rezept leer beginnt.
+- `FILES`: Das Standardmuster deckt unter `${libdir}` nur `${libdir}/${BPN}/*` ab, nicht `/usr/lib/swupdate/`.
+- `RDEPENDS`: Ohne SWUpdate liest niemand die `conf.d`-Datei. Die Abhängigkeit zeigt von der Erweiterung zu SWUpdate, nicht umgekehrt.
+
+`files/updatepartdetect`, POSIX-sh, weil im Image nur BusyBox `ash` steckt:
+
+```sh
+#!/bin/sh
+
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        root=PARTUUID=*)
+            partuuid=${arg#root=PARTUUID=}
+            ;;
+    esac
+done
+
+case "${partuuid##*-}" in
+    02) echo "stable,root_b" ;;
+    03) echo "stable,root_a" ;;
+    *)  echo "updatepartdetect: running partition unknown (${partuuid:-no root=PARTUUID})" >&2
+        exit 1 ;;
+esac
+```
+
+Das Skript gibt die Auswahl aus, statt eine Variable zu setzen. Variablen eines aufgerufenen Skripts sieht der Aufrufer nicht. Ist die Seite unbekannt, endet es mit 1, statt zu raten.
+
+`files/30-ab-select`, eingelesen von `swupdate.sh` (Abschnitt 18):
+
+```sh
+if AB_SELECT=$(updatepartdetect); then
+    SWUPDATE_ARGS="${SWUPDATE_ARGS} -e ${AB_SELECT}"
+fi
+```
+
+Ohne das `if` entstünde im Fehlerfall `swupdate -v -e -w "-r /www"`, und `-e` nähme `-w` als Auswahl. So startet der Dienst ohne `-e`, und jedes Update scheitert mit „Found nothing to install“, ohne etwas zu schreiben. Kein `exit` in einer `conf.d`-Datei: Es würde `swupdate.sh` beenden.
+
+`bbb-image.bbappend`:
+
+```
+IMAGE_INSTALL:append = " swupdate swupdate-www u-boot-env libubootenv-bin hwrevision swupdate-ab-select"
+```
+
+Prüfen:
+
+```bash
+ps | grep "[s]wupdate"
+```
+
+```
+/usr/bin/swupdate -v -e stable root_b -w -r /www
+```
+
+Das fehlende Komma ist kein Fehler. SWUpdate ersetzt beim Auswerten das Komma in seinem eigenen `argv` durch ein Nullbyte (`parse_image_selector()` in `core/swupdate.c`), `ps` zeigt Nullbytes als Leerzeichen.
+
+Von Hand:
+
+```bash
+swupdate -v -e "$(updatepartdetect)" -i /data/update-image-beaglebone-yocto.rootfs.swu
+```
+
+### Prüfen
+
+Karte mit `BBB_VERSION = "0.1.0"` beschreiben, `saveenv`, booten. Dann zweimal hintereinander:
+
+| Schritt | Ergebnis |
+| --- | --- |
+| Karte beschrieben | A läuft, `/etc/bbb-version` 0.1.0 |
+| `BBB_VERSION` 0.2.0, `bitbake update-image`, Update über den Browser, `reboot` | B läuft (`…-03`), 0.2.0, `ustate=1` |
+| `BBB_VERSION` 0.3.0, Update über den Browser, `reboot` | A läuft (`…-02`), 0.3.0 |
+
+Beim zweiten Update wird `root_a` zum ersten Mal per Update beschrieben. Erst damit ist gezeigt, dass beide Collections und die Erkennung aus B stimmen und dass das laufende System nie überschrieben wird.
+
+Im Log von SWUpdate:
+
+```
+[parse_image_selector] : Parsing selector: stable,root_b
+[_parse_images] : Found compressed Image: bbb-image-beaglebone-yocto.rootfs.ext4.gz in device : /dev/mmcblk0p3 for handler raw
+[_parse_bootloader] : Bootloader var: rootpart = 3
+[check_hw_compatibility] : Hardware compatibility verified
+[network_initializer] : Valid image found: copying to FLASH
+[INFO ] : SWUPDATE successful !
+```
+
+SWUpdate startet nicht selbst neu. Die Zeilen `Lua exception … swupdate_handlers not found` sind harmlos, es gibt nur keine optionalen Handler in Lua.
+
+### Grenzen dieses Aufbaus
+
+- `ustate=1` bleibt nach jedem Update stehen. Niemand bestätigt, dass die neue Seite funktioniert, und es gibt keinen Rückfall (Abschnitt 22).
+- `-e` wird nur beim Start des Dienstes berechnet. Ein zweites Update ohne Neustart schreibt dieselbe Seite noch einmal.
+- `/dev/mmcblk0p…` steht fest in `fstab` und `sw-description`, `mmc 0` in `boot.cmd`. Für das eMMC muss das in Schritt 11 allgemein gelöst werden.
 
 ## Quellen
 
