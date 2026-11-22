@@ -10,3 +10,7 @@ SWUPDATE_IMAGES = "bbb-image"
 SWUPDATE_IMAGES_FSTYPES[bbb-image] = ".rootfs.ext4.gz"
 
 inherit swupdate
+
+# swupdate.bbclass macht die @@…@@-Variablen in sw-description nicht zu
+# Abhängigkeiten von do_swuimage (swupdate-image.bbclass tut es)
+do_swuimage[vardeps] += "${@swupdate_find_bitbake_variables(d)}"

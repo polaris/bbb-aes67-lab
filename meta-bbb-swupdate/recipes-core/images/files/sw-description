@@ -1,8 +1,8 @@
 software =
 {
-    version = "0.1.0";
+    version = "@@BBB_VERSION@@";
     description = "Update";
-    hardware-compatibility: [ "1.0" ];
+    hardware-compatibility: [ "@@HW_REVISION@@" ];
 
     stable:
     {

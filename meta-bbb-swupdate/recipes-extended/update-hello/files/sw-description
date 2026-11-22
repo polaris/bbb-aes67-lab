@@ -2,7 +2,7 @@ software =
 {
 	version = "0.1.0";
 	description = "Erstes Test-Update";
-	hardware-compatibility: [ "1.0" ];
+	hardware-compatibility: [ "@@HW_REVISION@@" ];
 
 	files: (
 		{
