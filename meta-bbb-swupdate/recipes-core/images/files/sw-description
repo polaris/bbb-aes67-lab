@@ -1,0 +1,47 @@
+software =
+{
+    version = "0.1.0";
+    description = "Update";
+    hardware-compatibility: [ "1.0" ];
+
+    stable:
+    {
+        root_a:
+        {
+            images: (
+                {
+                    filename = "bbb-image-@@MACHINE@@.rootfs.ext4.gz";
+                    device = "/dev/mmcblk0p2";
+                    type = "raw";
+                    compressed = "zlib";
+                }
+            );
+
+            bootenv: (
+                {
+                    name = "rootpart";
+                    value = "2";
+                }
+            );
+        };
+        root_b:
+        {
+            images: (
+                {
+                    filename = "bbb-image-@@MACHINE@@.rootfs.ext4.gz";
+                    device = "/dev/mmcblk0p3";
+                    type = "raw";
+                    compressed = "zlib";
+                }
+            );
+
+            bootenv: (
+                {
+                    name = "rootpart";
+                    value = "3";
+                }
+            );
+        };
+
+    };
+};

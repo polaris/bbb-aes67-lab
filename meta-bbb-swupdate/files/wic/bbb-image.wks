@@ -7,6 +7,6 @@
 # extlinux.conf (kein loader=u-boot).
 
 part /uboot --source bootimg_partition --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4 --fixed-size 64 --use-uuid
-part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_a --align 4 --fixed-size 256 --use-uuid
-part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_b --align 4 --fixed-size 256 --use-uuid
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_a --align 4 --fixed-size 256 --use-uuid --no-fstab-update
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_b --align 4 --fixed-size 256 --use-uuid --no-fstab-update
 part /data --ondisk mmcblk0 --fstype=ext4 --label data --align 4 --size 128 --use-uuid
