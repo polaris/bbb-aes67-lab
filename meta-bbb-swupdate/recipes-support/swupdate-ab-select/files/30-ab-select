@@ -1,0 +1,3 @@
+if AB_SELECT=$(updatepartdetect); then
+    SWUPDATE_ARGS="${SWUPDATE_ARGS} -e ${AB_SELECT}"
+fi

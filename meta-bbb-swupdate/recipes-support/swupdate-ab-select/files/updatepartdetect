@@ -1,0 +1,16 @@
+#!/bin/sh
+
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        root=PARTUUID=*)
+            partuuid=${arg#root=PARTUUID=}
+            ;;
+    esac
+done
+
+case "${partuuid##*-}" in
+    02) echo "stable,root_b" ;;
+    03) echo "stable,root_a" ;;
+    *)  echo "updatepartdetect: running partition unknown (${partuuid:-no root=PARTUUID})" >&2
+        exit 1 ;;
+esac
