@@ -284,6 +284,7 @@ Lernfragen:
 - Delta-Updates (`delta`-Handler) und Vergleich der Größe.
 - Verschlüsselte Images.
 - dm-verity: Das Root-Dateisystem wird beim Lesen gegen eine signierte Prüfsumme geprüft. Passt zu Schritt 10.
+- Eigene Distribution statt Poky: `conf/distro/bbb.conf` mit `require conf/distro/poky.conf` und `DISTRO = "bbb"` (in `local.inc` bzw. per Konfigurations-Fragment). Produktweite Werte wie `DISTRO_VERSION` (statt `BBB_VERSION` aus `layer.conf`), `DISTRO_NAME` und `DISTRO_FEATURES` dort festlegen. `sw-description` nutzt `@@DISTRO_VERSION@@`, `/etc/os-release` zeigt die Version ohne eigenes Rezept. Klären, was in Distribution, Maschine, Layer und `local.conf` gehört. Prüfen, dass die Warnung „Poky is a reference distribution“ beim Login verschwindet und der Shared-State-Mirror weiter greift.
 
 ## Übernahme in die Anleitung
 
