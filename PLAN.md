@@ -9,6 +9,7 @@ Der Weg führt über die SD-Karte. Dort kann nichts kaputtgehen, was sich nicht 
 - Arbeit im Git-Branch `swupdate`. Der Stand auf `master` mit PTP bleibt lauffähig.
 - Eigener Layer `meta-bbb-swupdate` neben `meta-bbb`. So bleibt sichtbar, was nur für SWUpdate nötig ist.
 - Das Image heißt `bbb-image` und liegt in `meta-bbb`. Alles, was nur SWUpdate braucht (Pakete, `IMAGE_FEATURES`), kommt über `meta-bbb-swupdate/recipes-core/images/bbb-image.bbappend` dazu. `conf/local.inc` enthält nur Einstellungen für den Build-Rechner und die Entwicklung.
+- Jeder Schritt beginnt mit **Was**, **Ziel**, **Am Ende** und **Warum an dieser Stelle**. Lies das vor dem „Lesen“, damit klar ist, wofür du liest.
 - Jeder Schritt endet mit „Prüfen“. Erst weitergehen, wenn die Prüfung klappt.
 - Jeder Schritt hat Lernfragen. Beantworte sie schriftlich in eigenen Worten, bevor du weitergehst. Kannst du eine nicht beantworten, ist das der Hinweis, wo du nachlesen solltest.
 - Nach jedem Schritt das Ergebnis in `docs/anleitung.md` übernehmen (siehe letzter Abschnitt). Nicht alles erst am Ende.
@@ -16,6 +17,11 @@ Der Weg führt über die SD-Karte. Dort kann nichts kaputtgehen, was sich nicht 
 - Gelesen wird schrittweise. Jeder Schritt nennt unter „Lesen“ nur die Kapitel, die du dafür brauchst. Lies sie vor den Aufgaben. Gemeint ist die SWUpdate-Dokumentation unter sbabic.github.io/swupdate, sonst ist die Quelle angegeben. Weichen die Kapitelnamen in deiner Version ab, im Inhaltsverzeichnis nach dem Stichwort suchen.
 
 ## Schritt 1: Layer einbinden, SWUpdate ins Image
+
+- **Was:** `meta-swupdate` und den eigenen Layer `meta-bbb-swupdate` einbinden, ein eigenes Image `bbb-image` anlegen und SWUpdate hineinbringen.
+- **Ziel:** Werkzeug und Arbeitsumgebung stehen, ohne dass sich am Verhalten des Boards etwas ändert.
+- **Am Ende:** Ein Image mit SWUpdate und aktiver Prüfsummenprüfung. Klar getrennt, was zum Labor gehört (`meta-bbb`) und was nur zu SWUpdate (`meta-bbb-swupdate`).
+- **Warum an dieser Stelle:** Alles Weitere baut auf Layer und Image auf. Fehler beim Einbinden (Abhängigkeiten, Konfiguration) sollen nicht mit Fehlern beim Update zusammenfallen.
 
 Lesen:
 - Einleitung „SWUpdate: software update for embedded system“, nur den Überblick bis zur Liste der Funktionen.
@@ -38,7 +44,10 @@ Lernfragen:
 
 ## Schritt 2: Das erste Update – nur eine Datei
 
-Noch keine Partitionen. Ein Update, das eine einzige Datei installiert, zeigt das `.swu`-Format ohne Risiko.
+- **Was:** Ein Update bauen und einspielen, das nur eine einzige Datei installiert.
+- **Ziel:** Das Format `.swu`, `sw-description`, Handler und Prüfsummen verstehen.
+- **Am Ende:** Yocto baut eine `.swu`, sie lässt sich auf der Kommandozeile installieren, und ein manipuliertes Paket wird abgelehnt.
+- **Warum an dieser Stelle:** Das kleinste mögliche Update, ohne Risiko: keine Partitionen, kein Bootloader. Ein Fehler kostet höchstens eine Datei.
 
 Lesen:
 - Kapitel zur Syntax von `sw-description` (Default-Parser): Aufbau, Abschnitte `images` und `files`, `hardware-compatibility`. Collections und `bootenv` noch überspringen.
@@ -62,6 +71,11 @@ Lernfragen:
 
 ## Schritt 3: Updates über das Netzwerk
 
+- **Was:** Den Webserver von SWUpdate einschalten und verstehen, wie der Dienst startet.
+- **Ziel:** Updates ohne `scp` und SSH einspielen, so wie später im Betrieb.
+- **Am Ende:** Upload im Browser funktioniert. Die Startkette Init-Skript → `swupdate.sh` → `conf.d` ist bekannt.
+- **Warum an dieser Stelle:** Schritt 6 braucht die Startoptionen des Dienstes (Auswahl mit `-e`). Testen lässt sich hier noch mit dem harmlosen Update aus Schritt 2.
+
 Lesen:
 - Kapitel zum Starten von SWUpdate: Kommandozeilen-Optionen, besonders `-w` für den Webserver.
 - Den Abschnitt zum Webserver (Mongoose).
@@ -80,7 +94,10 @@ Lernfragen:
 
 ## Schritt 4: U-Boot-Umgebung aus Linux lesen und schreiben
 
-SWUpdate schaltet beim A/B-Update die Bootpartition über eine Variable in der U-Boot-Umgebung um. Dafür muss Linux wissen, wo U-Boot sie speichert.
+- **Was:** `fw_env.config` schreiben, sodass Linux die U-Boot-Umgebung lesen und schreiben kann.
+- **Ziel:** Ein gemeinsamer Kanal zwischen Linux und U-Boot. U-Boot und Linux laufen nie gleichzeitig, die Umgebung ist die einzige Stelle, über die sie sich verständigen.
+- **Am Ende:** `fw_printenv` und `fw_setenv` funktionieren in beide Richtungen, SWUpdate schreibt seine Markierungen `ustate` und `recovery_status`.
+- **Warum an dieser Stelle:** Voraussetzung für das Umschalten zwischen A und B (Schritt 5 und 6) und für den Rückfall (Schritt 7). Lässt sich für sich allein testen, bevor sich am Layout etwas ändert.
 
 Lesen:
 - „Bootloader Interface“, den Teil zu U-Boot.
@@ -100,6 +117,11 @@ Lernfragen:
 3. Warum speichert man die Umgebung oft doppelt (redundante Umgebung)?
 
 ## Schritt 5: A/B-Layout auf der SD-Karte
+
+- **Was:** Die Karte in vier Partitionen aufteilen. Ein eigenes Bootskript startet die Seite, die in der Variable `rootpart` steht.
+- **Ziel:** Zwei startfähige Systeme, zwischen denen eine einzige Variable umschaltet.
+- **Am Ende:** `fw_setenv rootpart 3` und ein Neustart starten B, `rootpart=2` wieder A.
+- **Warum an dieser Stelle:** Erst Layout und Bootweg von Hand beherrschen, dann SWUpdate darauf loslassen. Sonst ließe sich ein Fehler im Bootweg nicht von einem Fehler im Update unterscheiden.
 
 Ziel-Layout (gilt später genauso im eMMC):
 
@@ -132,6 +154,11 @@ Lernfragen:
 
 ## Schritt 6: Echtes A/B-Update
 
+- **Was:** Ein Update-Image mit zwei Collections bauen, die laufende Seite automatisch erkennen und eine sichtbare Version ins Image bringen.
+- **Ziel:** Das eigentliche A/B-Update: Das laufende System schreibt die andere Seite und schaltet erst danach um.
+- **Am Ende:** Updates über den Browser wechseln A → B → A, die Version steigt, die laufende Seite wird nie überschrieben.
+- **Warum an dieser Stelle:** Hier kommt alles Bisherige zusammen: das Format (2), der Dienst (3), die Umgebung (4) und das Layout (5).
+
 Lesen:
 - In der Syntax von `sw-description` jetzt die übersprungenen Teile: Collections und Auswahl mit `-e`, Abschnitt `bootenv`, Verweise mit `ref`.
 - Handler `raw` (bzw. Image-Handler für Partitionen) im Kapitel „Handlers“.
@@ -156,6 +183,11 @@ Lernfragen:
 
 ## Schritt 7: Automatischer Rückfall (Bootzähler)
 
+- **Was:** Bootzähler, `altbootcmd` und eine Bestätigung nach erfolgreichem Start einrichten, den Watchdog verstehen und den Ablauf eines Updates absichern.
+- **Ziel:** Ein Update, das korrekt geschrieben wurde, aber nicht funktioniert, macht das Gerät nicht unbrauchbar.
+- **Am Ende:** Ein kaputtes Update startet nicht, nach dem Bootlimit läuft wieder die alte Version. Ein gutes Update wird bestätigt. Ein zweites Update vor der Bestätigung wird abgelehnt.
+- **Warum an dieser Stelle:** Erst seit Schritt 6 gibt es Updates, die das ganze System ersetzen. Die Reihenfolge beim Schreiben schützt nur vor halb geschriebenen Updates, nicht vor einem neuen System, das nicht läuft. Außerdem wird hier zum ersten Mal das U-Boot-Programm selbst geändert und ins eMMC kopiert, deshalb erst nach den risikoarmen Schritten.
+
 Lesen:
 - U-Boot-Dokumentation: „Boot Count Limit“ (bootcount, `bootlimit`, `altbootcmd`).
 - „Bootloader Interface“ noch einmal, den Teil zu `upgrade_available` und `ustate`.
@@ -176,9 +208,12 @@ Lernfragen:
 
 ## Schritt 8: Update-System mit USB-Stick (single copy)
 
-Ergänzt A/B um ein kleines Linux mit SWUpdate, das als initramfs aus dem RAM läuft. Es ist dieselbe Technik wie bei einem reinen „single copy“-Aufbau, bei dem jedes Update über dieses System läuft. Hier ist es der Ausnahmeweg: Normale Updates schreibt weiter das laufende System in die andere Partition. Das Update-System wird gebraucht, wenn A und B beide nicht starten, kein Netzwerk da ist oder ein Werksreset gewünscht ist.
+- **Was:** Ein kleines Linux mit SWUpdate, das als initramfs aus dem RAM läuft. Es ist dieselbe Technik wie bei einem reinen „single copy“-Aufbau, bei dem jedes Update über dieses System läuft. Hier ist es der Ausnahmeweg: Normale Updates schreibt weiter das laufende System in die andere Partition.
+- **Ziel:** Ein Rettungsweg, wenn A und B beide nicht starten, kein Netzwerk da ist oder ein Werksreset gewünscht ist.
+- **Am Ende:** Ein USB-Stick mit `update.swu` stellt ein Board mit zerstörtem A und B wieder her.
+- **Warum an dieser Stelle:** Braucht Bootskript, U-Boot-Umgebung und `recovery_status` aus Schritt 5 bis 7. Kommt vor dem Umzug ins eMMC, weil der Weg dort ohne SD-Karte funktionieren muss.
 
-Kernel, Device Tree und initramfs liegen in der Boot-Partition, die kein Update verändert. U-Boot startet das Update-System statt A oder B, wenn ein Auslöser vorliegt. Erst angehen, wenn Schritt 5 bis 7 laufen, weil Bootskript, U-Boot-Umgebung und `recovery_status` gebraucht werden.
+Kernel, Device Tree und initramfs liegen in der Boot-Partition, die kein Update verändert. U-Boot startet das Update-System statt A oder B, wenn ein Auslöser vorliegt.
 
 Lesen:
 - In der Übersicht „Single copy – running as standalone image“ und „Double copy with fall-back“ vergleichen.
@@ -208,7 +243,10 @@ Lernfragen:
 
 ## Schritt 9: Schreibgeschütztes Root-Dateisystem mit Overlay für /etc
 
-Bei einem A/B-System soll das laufende Root-Dateisystem unverändert bleiben. Sonst gehen Änderungen beim Wechsel auf die andere Seite verloren, oder A und B unterscheiden sich unbemerkt. Erst angehen, wenn Schritt 6 und 7 stabil laufen.
+- **Was:** Das Root-Dateisystem nur lesbar einhängen und `/etc` als Overlay auf die `data`-Partition legen.
+- **Ziel:** A und B bleiben genau das, was das Update geschrieben hat. Sonst gehen Änderungen beim Wechsel auf die andere Seite verloren, oder A und B unterscheiden sich unbemerkt.
+- **Am Ende:** Schreiben ins Root-Dateisystem scheitert, Änderungen in `/etc` überleben Neustart und Seitenwechsel.
+- **Warum an dieser Stelle:** Erst wenn Schritt 6 und 7 stabil laufen: Ein schreibgeschütztes System bricht vieles (`fw_setenv`, SWUpdate, SSH-Schlüssel). Jeder Fehler soll eindeutig dieser Änderung zuzuordnen sein.
 
 Lesen:
 - Yocto-Dokumentation, Development Tasks Manual: „Creating a Read-Only Root Filesystem“.
@@ -231,6 +269,11 @@ Lernfragen:
 
 ## Schritt 10: Signierte Updates
 
+- **Was:** Die `.swu` beim Bauen signieren, auf dem Board nur signierte Updates annehmen.
+- **Ziel:** Nur Updates aus der eigenen Quelle landen auf dem Gerät.
+- **Am Ende:** Ein unsigniertes oder falsch signiertes Update wird abgelehnt, ein richtig signiertes installiert.
+- **Warum an dieser Stelle:** Die Signatur ändert nicht, *was* installiert wird, nur *ob*. Deshalb spät, damit beim Ausprobieren nicht jeder Versuch signiert sein muss. Vor dem eMMC, weil der öffentliche Schlüssel ins Image gehört, das dort landet.
+
 Lesen:
 - „Update images from verified source“.
 - In „meta-SWUpdate“ den Teil zum Signieren (`SWUPDATE_SIGNING`).
@@ -248,7 +291,10 @@ Lernfragen:
 
 ## Schritt 11: Umzug ins eMMC
 
-Erst wenn Schritt 1 bis 10 auf der SD-Karte laufen.
+- **Was:** Das ganze System ins eMMC bringen, die U-Boot-Umgebung roh und redundant speichern und feste Gerätenamen entfernen.
+- **Ziel:** Ein Zustand wie bei einem Produkt: Das Board startet ohne Karte, und auf dem Gerät ist nie ein `saveenv` nötig.
+- **Am Ende:** Start ohne Karte. Update über den Browser, Rückfall und Rettung per USB-Stick funktionieren aus dem eMMC.
+- **Warum an dieser Stelle:** Zuletzt, weil Fehler im eMMC schwerer zu beheben sind als auf einer Karte. Alles, was hier landet, ist vorher auf der SD-Karte bewiesen.
 
 Lesen:
 - Deine eigenen Abschnitte 19 bis 25 in `docs/anleitung.md` noch einmal durchgehen und alle Stellen markieren, an denen `mmcblk0` oder `mmc 0` fest steht.
@@ -279,6 +325,11 @@ Lernfragen:
 5. Warum muss `u-boot-initial-env` aus demselben U-Boot-Build stammen wie der Bootloader?
 
 ## Schritt 12 (optional): Weiterführend
+
+- **Was:** Themen, die über das Ziel des Plans hinausgehen.
+- **Ziel:** Je nach Interesse vertiefen, was ein echtes Produkt zusätzlich bräuchte.
+- **Am Ende:** Kein festes Ergebnis, jeder Punkt steht für sich.
+- **Warum an dieser Stelle:** Keiner der Punkte ist für Schritt 1 bis 11 nötig. Die meisten setzen ein funktionierendes A/B-System voraus.
 
 - Pre- und Post-Install-Skripte (`scripts` in `sw-description`), z. B. Konfiguration nach `/data` migrieren.
 - hawkBit-Server in Docker und SWUpdate im Suricatta-Modus: Das Board holt Updates selbst ab.
