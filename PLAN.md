@@ -183,22 +183,26 @@ Lernfragen:
 
 ## Schritt 7: Automatischer Rückfall (Bootzähler)
 
-- **Was:** Bootzähler, `altbootcmd` und eine Bestätigung nach erfolgreichem Start einrichten, den Watchdog verstehen und den Ablauf eines Updates absichern.
+- **Was:** Startversuche zählen, nach zu vielen Fehlversuchen auf die alte Seite zurückschalten und ein Update nach erfolgreichem Start bestätigen, den Watchdog verstehen und den Ablauf eines Updates absichern.
 - **Ziel:** Ein Update, das korrekt geschrieben wurde, aber nicht funktioniert, macht das Gerät nicht unbrauchbar.
 - **Am Ende:** Ein kaputtes Update startet nicht, nach dem Bootlimit läuft wieder die alte Version. Ein gutes Update wird bestätigt. Ein zweites Update vor der Bestätigung wird abgelehnt.
 - **Warum an dieser Stelle:** Erst seit Schritt 6 gibt es Updates, die das ganze System ersetzen. Die Reihenfolge beim Schreiben schützt nur vor halb geschriebenen Updates, nicht vor einem neuen System, das nicht läuft. Außerdem wird hier zum ersten Mal das U-Boot-Programm selbst geändert und ins eMMC kopiert, deshalb erst nach den risikoarmen Schritten.
 
 Lesen:
-- U-Boot-Dokumentation: „Boot Count Limit“ (bootcount, `bootlimit`, `altbootcmd`).
-- „Bootloader Interface“ noch einmal, den Teil zu `upgrade_available` und `ustate`.
+- „SWUpdate Best Practice“: der Teil zu `recovery_status` und `ustate` und das Zustandsdiagramm für den Rückfall. SWUpdate setzt `ustate=1`, zählen und zurückschalten muss der Bootloader.
+- U-Boot-Dokumentation: „Boot Count Limit“ (`bootcount`, `bootlimit`, `altbootcmd`). Dazu in den U-Boot-Quellen `drivers/bootcount/Kconfig`: die Speicherorte des Zählers und die U-Boot-eigene Variable `upgrade_available`.
 - Kernel-Dokumentation zum Watchdog (`Documentation/watchdog/watchdog-api.rst`), nur den Anfang bis zur „magic close“-Funktion.
 
 Aufgaben:
-1. Prüfen, ob das U-Boot einen Bootzähler hat (`CONFIG_BOOTCOUNT_LIMIT`, Speicherort `CONFIG_BOOTCOUNT_ENV`). Falls nicht: Konfigurations-Fragment für U-Boot im Layer, neu bauen, `MLO` und `u-boot.img` wie in Abschnitt 10 der Anleitung ins eMMC kopieren. Vorher prüfen, dass der Rettungsweg mit S2 funktioniert.
-2. `bootlimit`, `upgrade_available` und `altbootcmd` so setzen, dass nach drei misslungenen Starts die alte Partition bootet.
-3. Nach einem erfolgreichen Start bestätigt ein Dienst auf dem Board das Update (`upgrade_available=0`, `bootcount=0`). Überlegen, was „erfolgreich“ heißt, z. B. `ptp4l` erreicht `SLAVE`.
-4. Absichtlich ein kaputtes Update bauen (z. B. Kernel mit `init=/bin/false`) und einspielen.
-5. **Update-Ablauf absichern:** Nach einem erfolgreichen Update startet das Board selbst neu (`-p` von SWUpdate oder Option der Webseite). Solange ein Update nicht bestätigt ist (`upgrade_available=1`), wird ein weiteres abgelehnt. Klären, an welcher Stelle diese Prüfung hingehört. Hintergrund: Nach Update 1 zeigt `rootpart` schon auf die Seite, die ein zweites Update ohne Neustart überschreiben würde. Ein Stromausfall dabei würde das halb geschriebene System starten.
+1. **Bauweise festlegen.** Es gibt zwei Muster, die sich auch mischen lassen:
+   - *U-Boot-Mechanismus:* Das Update setzt über `bootenv` `upgrade_available=1`. U-Boot zählt `bootcount` hoch und führt ab `bootlimit` `altbootcmd` statt `bootcmd` aus. Bestätigt wird mit `upgrade_available=0` und `bootcount=0`.
+   - *SWUpdate-Muster:* SWUpdate setzt selbst `ustate=1`. `boot.cmd` erkennt daran ein Update im Test, zählt die Startversuche, schaltet ab einer Schwelle auf die alte Seite zurück und setzt `ustate=3`. Bestätigt wird mit `ustate=0`.
+   Für jedes Muster klären: Wer zählt, wo liegt der Zähler, was wird bei jedem Start geschrieben, wie setzt Linux zurück? Dann eins wählen und begründen.
+2. **Speicherort des Zählers.** Das U-Boot hat heute `CONFIG_BOOTCOUNT_AM33XX`: Der Zähler liegt im Register der Echtzeituhr, Linux kann ihn nicht mit `fw_setenv` zurücksetzen. Die Varianten in `drivers/bootcount/Kconfig` vergleichen (`BOOTCOUNT_AM33XX`, `BOOTCOUNT_AM33XX_NVMEM`, `BOOTCOUNT_ENV`) oder ganz auf einen eigenen Zähler in `boot.cmd` setzen. Muss die U-Boot-Konfiguration geändert werden: Konfigurations-Fragment im Layer, neu bauen, `MLO` und `u-boot.img` wie in Abschnitt 10 der Anleitung ins eMMC kopieren. Das Board startet U-Boot aus dem eMMC, eine geänderte Konfiguration wirkt erst dann. Vorher prüfen, dass der Rettungsweg mit S2 funktioniert.
+3. Rückfall umsetzen: Nach drei misslungenen Starts bootet die alte Seite, und der Fehlschlag ist in der Umgebung sichtbar (`ustate=3`).
+4. Nach einem erfolgreichen Start bestätigt ein Dienst auf dem Board das Update. Überlegen, was „erfolgreich“ heißt, z. B. `ptp4l` erreicht `SLAVE`.
+5. Absichtlich ein kaputtes Update bauen und einspielen. Die Kommandozeile des Kernels kommt aus `boot.cmd` in der Boot-Partition, das Update kann sie nicht ändern. Der Fehler muss also im Root-Dateisystem stecken, z. B. ein `/sbin/init`, das sofort endet.
+6. **Update-Ablauf absichern:** Nach einem erfolgreichen Update startet das Board selbst neu (`-p` von SWUpdate oder Option der Webseite). Solange ein Update nicht bestätigt ist (`ustate=1` bzw. `upgrade_available=1`), wird ein weiteres abgelehnt. Klären, an welcher Stelle diese Prüfung hingehört. Hintergrund: Nach Update 1 zeigt `rootpart` schon auf die Seite, die ein zweites Update ohne Neustart überschreiben würde. Ein Stromausfall dabei würde das halb geschriebene System starten.
 
 Prüfen: Das kaputte Update startet nicht, nach dem Bootlimit läuft wieder die alte Version. Ein gutes Update wird bestätigt und bleibt. Ein zweites Update vor der Bestätigung wird abgelehnt.
 
