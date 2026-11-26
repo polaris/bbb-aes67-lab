@@ -21,6 +21,10 @@ software =
                 {
                     name = "rootpart";
                     value = "2";
+                },
+                {
+                    name = "ab_count";
+                    value = "0";
                 }
             );
         };
@@ -39,6 +43,10 @@ software =
                 {
                     name = "rootpart";
                     value = "3";
+                },
+                {
+                    name = "ab_count";
+                    value = "0";
                 }
             );
         };

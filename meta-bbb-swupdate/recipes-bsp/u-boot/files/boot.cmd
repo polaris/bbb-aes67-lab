@@ -5,6 +5,29 @@ if test -z "${rootpart}"; then
     setenv rootpart 2
 fi
 
+if test -z "${ab_limit}"; then
+    setenv ab_limit 3
+fi
+
+if test -z "${ab_count}"; then
+    setenv ab_count 0
+fi
+
+if test "${ustate}" = "1"; then
+    setexpr ab_count ${ab_count} + 1
+    if test "${ab_count}" -gt "${ab_limit}"; then
+        if test "${rootpart}" = "2"; then
+            setenv rootpart 3
+        else
+            setenv rootpart 2
+        fi
+        echo "A/B: ab_count ${ab_count} > ab_limit ${ab_limit}, switching to rootpart ${rootpart}"
+        setenv ab_count 0
+        setenv ustate 3
+    fi
+    saveenv
+fi
+
 echo "A/B: booting from ${devtype} ${devnum}:${rootpart}"
 
 load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/zImage
