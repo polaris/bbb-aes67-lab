@@ -1,4 +1,4 @@
-IMAGE_INSTALL:append = " swupdate swupdate-www u-boot-env libubootenv-bin hwrevision swupdate-ab-select"
+IMAGE_INSTALL:append = " swupdate swupdate-www u-boot-env libubootenv-bin hwrevision swupdate-ab-select update-confirm"
 
 WKS_FILE = "bbb-image.wks"
 

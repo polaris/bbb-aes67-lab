@@ -1,0 +1,3 @@
+#!/bin/sh
+# Linux ist bis zum Login gekommen, sonst liefe dieses Skript nicht
+exit 0

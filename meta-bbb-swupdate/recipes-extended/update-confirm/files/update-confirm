@@ -1,0 +1,17 @@
+#!/bin/sh
+
+case "$1" in
+    start)
+        if [ "$(fw_printenv -n ustate 2>/dev/null)" = "1" ]; then
+            run-parts /usr/lib/update-confirm/checks.d
+            if [ $? -eq 0 ]; then
+                echo "All checks passed, setting ustate to 0"
+                fw_setenv ustate 0
+                fw_setenv ab_count 0
+            else
+                echo "Checks failed, keeping ustate at 1"
+                exit 1
+            fi
+        fi
+        ;;
+esac
