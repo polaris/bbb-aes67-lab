@@ -34,6 +34,10 @@ load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/zImage
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
 
 part uuid ${devtype} ${devnum}:${rootpart} rootuuid
-setenv bootargs console=ttyS0,115200 root=PARTUUID=${rootuuid} rootwait
+
+# panic=5: nach einer Kernel-Panic neu starten (Kernel-Vorgabe: für immer warten)
+# omap_wdt.early_enable=1: Watchdog von U-Boot weiterlaufen lassen, der Treiber
+#   schaltet ihn sonst beim Laden ab
+setenv bootargs console=ttyS0,115200 panic=5 omap_wdt.early_enable=1 root=PARTUUID=${rootuuid} rootwait
 
 bootz ${kernel_addr_r} - ${fdt_addr_r}
