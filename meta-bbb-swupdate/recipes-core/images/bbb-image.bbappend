@@ -19,7 +19,9 @@ break_image() {
 }
 ROOTFS_POSTPROCESS_COMMAND += "break_image"
 
-IMAGE_BOOT_FILES:append = " boot.scr"
+IMAGE_BOOT_FILES:append = " boot.scr swupdate-image-${MACHINE}.rootfs.cpio.gz.u-boot;swupdate-image.cpio.gz.u-boot"
+# wic liest das Update-System nur aus dem Deploy-Verzeichnis, also vorher bauen
+do_image_wic[depends] += "swupdate-image:do_image_complete"
 
 IMAGE_FSTYPES += "ext4.gz"
 
