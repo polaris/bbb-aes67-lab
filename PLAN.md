@@ -223,21 +223,39 @@ Kernel, Device Tree und initramfs liegen in der Boot-Partition, die kein Update 
 Lesen:
 - In der Übersicht „Single copy – running as standalone image“ und „Double copy with fall-back“ vergleichen.
 - In `meta-swupdate` das Rezept `recipes-extended/images/swupdate-image.bb` mit `swupdate-image.inc`.
-- U-Boot-Dokumentation: Befehle `usb` und `bootz` (Aufruf mit initrd: `bootz <kernel> <initrd>:<größe> <fdt>`).
+- U-Boot-Dokumentation: Befehle `usb` und `bootz` (Aufruf mit initramfs: `bootz <kernel> <initramfs> <fdt>`, ohne U-Boot-Kopf `<adresse>:<größe>` statt `<initramfs>`).
 - In `swupdate.inc` die Pakete `swupdate-usb` und `swupdate-client` (udev-Regel für USB-Sticks).
 
-Aufgaben:
-1. `swupdate-image` bauen. Format und Größe des Ergebnisses prüfen. Klären, ob das Update-System einen eigenen Kernel braucht oder denselben `zImage` nutzen kann.
-2. Kernel, Device Tree und initramfs für das Update-System in die Boot-Partition bringen (`IMAGE_BOOT_FILES` bzw. `.wks`). Prüfen, ob die Boot-Partition groß genug ist.
-3. Bootskript erweitern: Bei einem Auslöser das Update-System laden und mit `bootz` samt initrd starten. Auslöser:
+Aufgaben, in vier Teilen. Jeder Teil hat eine eigene Prüfung, erst danach zum nächsten.
+
+**8a: Update-System bauen und von Hand starten**
+1. `swupdate-image` bauen. Format und Größe des Ergebnisses prüfen. meta-swupdate baut standardmäßig ein initrd (`IMAGE_FSTYPES = "ext4.gz.u-boot"`, ext4 in einer RAM-Disk mit fester Größe). Per `.bbappend` auf initramfs umstellen (`cpio.gz.u-boot`).
+2. Klären, ob das Update-System einen eigenen Kernel braucht oder denselben `zImage` nutzen kann (`CONFIG_BLK_DEV_INITRD`).
+3. Die Datei von Hand nach `/uboot` kopieren. Am U-Boot-Prompt Kernel, Device Tree und initramfs laden und mit `bootz` starten, Zeile für Zeile wie bei `boot.cmd` in Schritt 5.
+
+Prüfen 8a: Das Update-System läuft aus dem RAM, `mount` zeigt keine Partition von A oder B als `/`, die Webseite von SWUpdate ist erreichbar.
+
+**8b: Update von Hand vom USB-Stick**
+4. Im Update-System den Stick einhängen und `update.swu` mit `swupdate -i` installieren. Klären, welche `-e`-Auswahl dort passt, denn `updatepartdetect` erkennt keine laufende Seite.
+
+Prüfen 8b: Nach dem Neustart läuft die installierte Version aus A oder B.
+
+**8c: Update-System automatisch starten**
+5. Das Image des Update-Systems fest in die Boot-Partition bringen (`IMAGE_BOOT_FILES`, Abhängigkeit über `do_image_wic[depends]`). Prüfen, ob die Boot-Partition groß genug ist.
+6. Bootskript erweitern: Bei einem Auslöser das Update-System laden und mit `bootz` starten. Auslöser:
    - Variable `rescue=1`, gesetzt aus Linux mit `fw_setenv` (z. B. für einen Werksreset)
    - USB-Stick mit einer Datei `update.swu` (in U-Boot `usb start` und `test -e usb 0:1 update.swu`)
    - `recovery_status=in_progress`, also ein abgebrochenes Update
-4. Im Update-System den Stick einhängen und `update.swu` installieren, automatisch über ein Skript oder die udev-Regel von `swupdate-usb`. Danach die Auslöser zurücksetzen und neu starten.
-5. `sw-description` um eine Variante für das Update-System ergänzen, die **A und B** schreibt und `rootpart` auf A setzt. Danach sind beide Seiten gleich und gültig, wie nach einem Werksreset. Würde nur A geschrieben, bliebe ein kaputtes B zurück, und der Rückfall aus Schritt 7 würde später auf dieses B führen.
-6. A und B absichtlich zerstören (z. B. das erste MB mit `dd if=/dev/zero` überschreiben) und das Board nur mit dem USB-Stick wiederherstellen.
+   Rangfolge zu `ustate`, Zähler und Rückfall aus Schritt 7 festlegen.
+7. Im Update-System den Stick automatisch einhängen und `update.swu` installieren, über ein Skript oder die udev-Regel von `swupdate-usb`. Danach die Auslöser zurücksetzen und neu starten.
 
-Prüfen: Mit zerstörtem A und B startet das Board mit Stick ins Update-System, installiert das Update und startet danach normal aus A. Nach `fw_setenv rootpart 3` startet es auch aus B. Ohne Stick und ohne Auslöser startet es wie bisher A oder B.
+Prüfen 8c: Jeder der drei Auslöser startet das Update-System, ohne Auslöser startet das Board wie bisher A oder B.
+
+**8d: Werksreset auf A und B**
+8. `sw-description` um eine Variante für das Update-System ergänzen, die **A und B** schreibt und `rootpart` auf A setzt. Danach sind beide Seiten gleich und gültig, wie nach einem Werksreset. Würde nur A geschrieben, bliebe ein kaputtes B zurück, und der Rückfall aus Schritt 7 würde später auf dieses B führen.
+9. A und B absichtlich zerstören (z. B. das erste MB mit `dd if=/dev/zero` überschreiben) und das Board nur mit dem USB-Stick wiederherstellen.
+
+Prüfen (gesamt): Mit zerstörtem A und B startet das Board mit Stick ins Update-System, installiert das Update und startet danach normal aus A. Nach `fw_setenv rootpart 3` startet es auch aus B. Ohne Stick und ohne Auslöser startet es wie bisher A oder B.
 
 Lernfragen:
 1. Warum läuft das Update-System aus dem RAM und nicht von einer eigenen Partition?
