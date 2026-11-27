@@ -292,6 +292,8 @@ umount /mnt/emmc
 poweroff
 ```
 
+Mit dem A/B-Layout (ab Abschnitt 20) ist die Boot-Partition der Karte unter `/uboot` eingehängt, dann `cp /uboot/MLO /uboot/u-boot.img /mnt/emmc/` (Abschnitt 22).
+
 Test: SD-Karte entfernen, ohne S2 einschalten. PuTTY zeigt jetzt die neue U-Boot-Version statt 2014.04. Steht dort weiterhin die alte Version, liegt eine Rohkopie des alten Bootloaders außerhalb der Partition und muss mit `dd` ersetzt werden.
 
 ## 11. PTP-Hardware-Zeitstempel aktivieren
@@ -1431,6 +1433,352 @@ SWUpdate startet nicht selbst neu. Die Zeilen `Lua exception … swupdate_handle
 - `ustate=1` bleibt nach jedem Update stehen. Niemand bestätigt, dass die neue Seite funktioniert, und es gibt keinen Rückfall (Abschnitt 22).
 - `-e` wird nur beim Start des Dienstes berechnet. Ein zweites Update ohne Neustart schreibt dieselbe Seite noch einmal.
 - `/dev/mmcblk0p…` steht fest in `fstab` und `sw-description`, `mmc 0` in `boot.cmd`. Für das eMMC muss das in Schritt 11 allgemein gelöst werden.
+
+## 22. Rückfall mit Bootzähler
+
+Ein Update kann vollständig und mit richtiger Prüfsumme geschrieben werden und trotzdem nicht starten. Dann soll das Board nach einigen Versuchen von selbst auf die alte Seite zurückgehen. Ein gutes Update wird nach dem Start bestätigt.
+
+### Bauweise
+
+Zwei Muster sind möglich:
+
+| | U-Boot-Mechanismus | SWUpdate-Muster (gewählt) |
+| --- | --- | --- |
+| „Update im Test“ | `upgrade_available=1`, setzt das Update über `bootenv` | `ustate=1`, setzt SWUpdate selbst |
+| Wer zählt | U-Boot (`bootcount`, `bootlimit`) | `boot.cmd` mit eigenem Zähler `ab_count` |
+| Wo liegt der Zähler | je nach Treiber, hier im RTC-Register (`BOOTCOUNT_AM33XX`), nur mit `BOOTCOUNT_ENV` in `uboot.env` | `uboot.env` |
+| Was wird bei jedem Start geschrieben | nur bei `upgrade_available=1` | nur bei `ustate=1` |
+| Rückfall | `altbootcmd` | Zweig in `boot.cmd`, setzt `ustate=3` |
+| Bestätigung | `upgrade_available=0`, `bootcount=0` | `ustate=0`, `ab_count=0` |
+
+`upgrade_available` ist eine Variable von U-Boot (`drivers/bootcount/Kconfig`), nicht von SWUpdate. SWUpdate beschreibt sein Muster im Kapitel „SWUpdate Best Practice“: SWUpdate setzt `ustate=1`, zählen und zurückschalten muss der Bootloader.
+
+Gründe für das SWUpdate-Muster: `boot.cmd` entscheidet ohnehin über `rootpart`, `ustate` wird schon gesetzt, der Fehlschlag bleibt als `ustate=3` sichtbar, der Zähler übersteht ein Ausschalten, und jede Zeile lässt sich am U-Boot-Prompt testen.
+
+| `ustate` | Bedeutung | `boot.cmd` |
+| --- | --- | --- |
+| nicht gesetzt oder `0` | kein Update ausstehend | normal starten |
+| `1` | Update im Test | zählen, ab Schwelle zurückschalten |
+| `3` | letztes Update gescheitert | normal starten, nicht zählen |
+
+### U-Boot anpassen
+
+Zwei Konfigurations-Fragmente in `meta-bbb-swupdate/recipes-bsp/u-boot/files/`:
+
+`setexpr.cfg`, zum Hochzählen. `am335x_evm_defconfig` schaltet den Befehl ab:
+
+```
+CONFIG_CMD_SETEXPR=y
+```
+
+`bootcount.cfg`, der eingebaute Bootzähler wird abgeschaltet:
+
+```
+# CONFIG_BOOTCOUNT_LIMIT is not set
+```
+
+Der eingebaute Zähler liegt im RTC-Register. Linux kann ihn mit `fw_setenv` nicht zurücksetzen, und er verliert seinen Wert beim Ausschalten. Gefährlicher: Ist `bootlimit` gesetzt und `bootcount > bootlimit`, führt U-Boot in `bootdelay_process()` (`common/autoboot.c`) `altbootcmd` statt `bootcmd` aus. `altbootcmd` ist leer, `boot.scr` liefe nie. Ohne `BOOTCOUNT_LIMIT` gibt es weder `bootlimit` noch `altbootcmd`. `BOOTCOUNT_AM33XX` muss nicht extra abgeschaltet werden, es ist eine Auswahl innerhalb von `BOOTCOUNT_LIMIT`. Der 32-kHz-Oszillator der Uhr bleibt an (`SPL_AM33XX_ENABLE_RTC32K_OSC` ist auf dem AM335x `default y`).
+
+`u-boot_%.bbappend`:
+
+```
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://fw_env.config file://boot.cmd file://setexpr.cfg file://bootcount.cfg"
+
+UBOOT_ENV = "boot"
+UBOOT_ENV_SUFFIX = "scr"
+```
+
+Prüfen im Build:
+
+```bash
+grep -E "BOOTCOUNT_LIMIT|CMD_SETEXPR" tmp/work/beaglebone_yocto-poky-linux-gnueabi/u-boot/2026.01/build/.config
+```
+
+### U-Boot ins eMMC
+
+Das Board startet `MLO` und `u-boot.img` aus dem eMMC (Abschnitt 10). Von der SD-Karte kommen nur `boot.scr` und `uboot.env`. Eine geänderte U-Boot-Konfiguration wirkt erst, wenn beide Dateien ins eMMC kopiert sind. Vorher den Rettungsweg prüfen: mit S2 starten, in U-Boot `help setexpr`. Das zeigt zugleich, dass das neue U-Boot von der Karte funktioniert.
+
+```bash
+mkdir -p /mnt/emmc
+mount -t vfat /dev/mmcblk1p1 /mnt/emmc
+md5sum /uboot/MLO /uboot/u-boot.img /mnt/emmc/MLO /mnt/emmc/u-boot.img
+cp /uboot/MLO /uboot/u-boot.img /mnt/emmc/
+sync
+md5sum /mnt/emmc/MLO /mnt/emmc/u-boot.img
+umount /mnt/emmc
+poweroff
+```
+
+Die Boot-Partition der Karte ist seit Abschnitt 20 unter `/uboot` eingehängt, nicht unter `/boot`. Auch `MLO` ändert sich, weil das Abschalten von `BOOTCOUNT_LIMIT` das SPL betrifft. Die Warnung `Volume was not properly unmounted` beim Einhängen stammt aus Abschnitt 21 (`LABEL=boot` hatte diese Partition erwischt). `fsck.vfat` ist nicht im Image, nach dem sauberen `umount` ist das Bit gelöscht.
+
+Ohne S2 starten und prüfen:
+
+```
+=> help setexpr
+=> printenv bootlimit altbootcmd
+## Error: "bootlimit" not defined
+## Error: "altbootcmd" not defined
+```
+
+Das Datum in `version` bleibt `Jan 05 2026`. Für reproduzierbare Builds stammt es aus der U-Boot-Version (`SOURCE_DATE_EPOCH`), nicht aus dem Build.
+
+### Zählen und zurückschalten
+
+`meta-bbb-swupdate/recipes-bsp/u-boot/files/boot.cmd`, vor dem Laden des Kernels:
+
+```
+if test -z "${ab_limit}"; then
+    setenv ab_limit 3
+fi
+
+if test -z "${ab_count}"; then
+    setenv ab_count 0
+fi
+
+if test "${ustate}" = "1"; then
+    setexpr ab_count ${ab_count} + 1
+    if test "${ab_count}" -gt "${ab_limit}"; then
+        if test "${rootpart}" = "2"; then
+            setenv rootpart 3
+        else
+            setenv rootpart 2
+        fi
+        echo "A/B: ab_count ${ab_count} > ab_limit ${ab_limit}, switching to rootpart ${rootpart}"
+        setenv ab_count 0
+        setenv ustate 3
+    fi
+    saveenv
+fi
+```
+
+- Eigene Namen `ab_count` und `ab_limit`, weil U-Boot `bootcount` und `bootlimit` selbst auswertet.
+- `test … -gt …` zählt nur echte Überschreitungen: Mit `ab_limit=3` gibt es drei Versuche, der vierte Start schaltet zurück.
+- `setenv` ändert nur die Kopie im RAM, `saveenv` macht die Änderung dauerhaft. Geschrieben wird nur bei `ustate=1`.
+- Beim Rückfall wird `ab_count` zurückgesetzt. Sonst begänne das nächste Update mit einem Zähler über der Schwelle und fiele sofort zurück.
+- `setexpr` rechnet hexadezimal (`env_set_hex()` in `cmd/setexpr.c`). Nach `9` folgt `a`, und `test` liest `a` als 0. `ab_limit` deshalb höchstens 8.
+
+Zusätzlich setzt jedes Update den Zähler zurück. In `sw-description` bekommt jede Collection einen zweiten Eintrag im `bootenv`:
+
+```
+bootenv: (
+    {
+        name = "rootpart";
+        value = "2";
+    },
+    {
+        name = "ab_count";
+        value = "0";
+    }
+);
+```
+
+### Neustart nach einer Panic
+
+Beim ersten Test mit kaputtem Update blieb das Board in der Kernel-Panic stehen, auch nach Minuten. Zwei Gründe:
+
+- `CONFIG_PANIC_TIMEOUT=0`: Der Kernel wartet nach einer Panic für immer.
+- U-Boot startet den Watchdog (`WDT: Started wdt@44e35000 … (60s timeout)`), aber der Treiber `omap_wdt` schaltet ihn beim Laden ab, solange der Modulparameter `early_enable` aus ist (`omap_wdt_probe()` in `drivers/watchdog/omap_wdt.c`).
+
+In `boot.cmd`:
+
+```
+# panic=5: nach einer Kernel-Panic neu starten (Kernel-Vorgabe: für immer warten)
+# omap_wdt.early_enable=1: Watchdog von U-Boot weiterlaufen lassen, der Treiber
+#   schaltet ihn sonst beim Laden ab
+setenv bootargs console=ttyS0,115200 panic=5 omap_wdt.early_enable=1 root=PARTUUID=${rootuuid} rootwait
+```
+
+`omap_wdt` ist fest im Kernel (`CONFIG_OMAP_WATCHDOG=y`), deshalb wirkt `<modul>.<parameter>` auf der Kommandozeile. Mit `early_enable` bedient der Kernel den Watchdog selbst (`CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y`), solange kein Programm `/dev/watchdog` öffnet. Ein hängender Kernel führt so nach 60 Sekunden zum Neustart. Ein hängendes Programm im User-Space nicht, dafür bräuchte es einen Dienst, der `/dev/watchdog` bedient. `/sys/class/watchdog/watchdog0/state` gibt es nicht, `CONFIG_WATCHDOG_SYSFS` ist aus.
+
+`boot.cmd` liegt in der Boot-Partition, die kein Update ändert. Ohne die Karte neu zu beschreiben:
+
+```bash
+bitbake u-boot
+scp tmp/deploy/images/beaglebone-yocto/boot.scr root@<board>:/uboot/boot.scr
+```
+
+Auf dem Board `sync` und `reboot`, dann `cat /proc/cmdline`.
+
+### Update bestätigen
+
+Eigenes Rezept `meta-bbb-swupdate/recipes-extended/update-confirm/update-confirm.bb`:
+
+```
+SUMMARY = "Script to confirm the update of the A/B partition for SWUpdate"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
+SRC_URI = "file://update-confirm file://10-login"
+
+# Keine Quellen zum Auspacken, nur einzelne Dateien
+S = "${UNPACKDIR}"
+
+inherit allarch update-rc.d
+
+# Als letzter Dienst starten, nach rmnologin.sh (S99, alphabetisch davor)
+INITSCRIPT_NAME = "update-confirm"
+INITSCRIPT_PARAMS = "start 99 2 3 4 5 ."
+
+do_configure[noexec] = "1"
+do_compile[noexec] = "1"
+
+do_install() {
+    install -d ${D}${sysconfdir}/init.d
+    install -m 0755 ${UNPACKDIR}/update-confirm ${D}${sysconfdir}/init.d/
+
+    install -d ${D}${libdir}/${BPN}/checks.d
+    install -m 0755 ${UNPACKDIR}/10-login ${D}${libdir}/${BPN}/checks.d/
+}
+
+RDEPENDS:${PN} += "libubootenv-bin"
+```
+
+- `update-rc.d` legt beim Bau des Images die Links in `/etc/rcN.d/` an. SysVinit startet sie nach Namen sortiert, Runlevel 5 ist der Standard (`/etc/inittab`). Mit `start 99 2 3 4 5 .` entsteht `S99update-confirm`, nach `S70swupdate` und `S99rmnologin.sh`. `defaults 99` würde zusätzlich Stopplinks anlegen.
+- `FILES` ist nicht nötig: `${sysconfdir}` und `${libdir}/${BPN}/*` gehören zum Standardmuster von `FILES:${PN}`. Bei `swupdate-ab-select` lagen die Dateien unter `/usr/lib/swupdate/`, also unter einem fremden Namen, dort war `FILES` nötig.
+
+`files/update-confirm`:
+
+```sh
+#!/bin/sh
+
+case "$1" in
+    start)
+        if [ "$(fw_printenv -n ustate 2>/dev/null)" = "1" ]; then
+            run-parts /usr/lib/update-confirm/checks.d
+            if [ $? -eq 0 ]; then
+                echo "All checks passed, setting ustate to 0"
+                fw_setenv ustate 0
+                fw_setenv ab_count 0
+            else
+                echo "Checks failed, keeping ustate at 1"
+                exit 1
+            fi
+        fi
+        ;;
+esac
+```
+
+Das Skript startet keine Dienste, es prüft nur. `fw_printenv -n` gibt nur den Wert aus. Ein Stromausfall zwischen den beiden `fw_setenv` schadet in keiner Reihenfolge, weil `ustate` das Zählen steuert.
+
+Jede Prüfung ist ein eigenes Skript in `checks.d`. Heute gibt es nur `files/10-login`:
+
+```sh
+#!/bin/sh
+# Linux ist bis zum Login gekommen, sonst liefe dieses Skript nicht
+exit 0
+```
+
+Ein späterer Dienst bringt seine eigene Prüfung mit, z. B. `50-ptp4l`. BusyBox `run-parts` führt nur Dateien aus, deren Name aus Buchstaben, Ziffern, `_` und `-` besteht. `50-ptp4l.sh` würde wegen des Punkts still übersprungen. Eine leere Datei ohne `#!/bin/sh` zählt als Fehlschlag.
+
+`bbb-image.bbappend`: `update-confirm` in `IMAGE_INSTALL`.
+
+### Update-Ablauf absichern
+
+Nach einem Update ohne Neustart zeigt `rootpart` schon auf die Seite, die ein zweites Update überschreiben würde. Ein Stromausfall dabei würde das halb geschriebene System starten. Zwei Gegenmaßnahmen im Rezept `swupdate-ab-select` (Abschnitt 21):
+
+`files/updateallowed`:
+
+```sh
+#!/bin/sh
+
+if [ "$(fw_printenv -n ustate 2>/dev/null)" = "1" ]; then
+    echo "Update under test (ustate=1): confirm or reboot before the next update" >&2
+    exit 1
+fi
+
+exit 0
+```
+
+`files/40-check-pending`:
+
+```sh
+SWUPDATE_ARGS="${SWUPDATE_ARGS} -P /usr/bin/updateallowed"
+```
+
+`files/50-postinstall-reboot`:
+
+```sh
+SWUPDATE_ARGS="${SWUPDATE_ARGS} -p /sbin/reboot"
+```
+
+Im Rezept dazu `SRC_URI`, `install` (`updateallowed` mit `0755` nach `${bindir}`, die `conf.d`-Dateien mit `0644`), `FILES:${PN} += "${libdir}/swupdate/conf.d/*"` und `RDEPENDS:${PN} += "swupdate libubootenv-bin"`.
+
+- `-P` läuft bei jedem Update, direkt nach dem Prüfen von `sw-description` und der Hardware, bevor ein Zustand geschrieben wird (`extract_files()` in `core/stream_interface.c`). Ein abgelehntes Update lässt `ustate` und `recovery_status` unverändert.
+- Ein `preinstall`-Skript in `sw-description` wäre die falsche Stelle: Es läuft in `install_images()`, und ein Fehlschlag dort setzt `ustate=3` (`update_transaction_state(software, STATE_FAILED)`). Das überschreibt das `ustate=1` des Updates im Test und beendet dessen Rückfall.
+- Eine Prüfung in `conf.d` allein reicht nicht, sie läuft nur einmal beim Start des Dienstes.
+- `-p` läuft nur nach einem erfolgreichen Update, beim Aufruf von Hand (`endupdate()`) wie beim Webserver (`run_postupdate` ist dort standardmäßig an).
+- SWUpdate führt die Befehle über `/bin/sh -c` aus (`core/pctl.c`), die Ausgabe auf stderr steht im Log. Absolute Pfade machen sie unabhängig vom `PATH` des Dienstes.
+- `conf.d`-Dateien werden eingelesen, nicht ausgeführt: kein Shebang, `0644`. Ein Syntaxfehler darin, etwa ein fehlendes `"`, lässt `swupdate.sh` und damit den ganzen Dienst scheitern. Vorher mit `sh -n datei` prüfen.
+
+Abgelehntes Update im Log:
+
+```
+[preupdatecmd] : Running Pre-update command
+ERROR … Update under test (ustate=1): confirm or reboot before the next update
+[__run_cmd] : /usr/bin/updateallowed command returned 1
+Image invalid or corrupted. Not installing ...
+```
+
+Beim Upload über den Browser erscheint das mehrmals mit `Writing to IPC fails due to Broken pipe`. SWUpdate schließt die Verbindung nach `sw-description`, die Webseite versucht es erneut.
+
+### Kaputtes Update zum Testen
+
+`bbb-image.bbappend`:
+
+```
+BBB_BROKEN ?= "0"
+break_image() {
+    if [ "${BBB_BROKEN}" = "1" ]; then
+        rm -f ${IMAGE_ROOTFS}/sbin/init
+        printf '#!/bin/sh\n# Absichtlich kaputt: endet sofort, der Kernel gerät in Panic\nexit 1\n' \
+            > ${IMAGE_ROOTFS}/sbin/init
+        chmod 755 ${IMAGE_ROOTFS}/sbin/init
+    fi
+}
+ROOTFS_POSTPROCESS_COMMAND += "break_image"
+```
+
+- Image-Rezepte holen und entpacken nichts (`do_fetch[noexec]` in `image.bbclass`). Eine Datei in `files/` käme nie an, deshalb steht das Skript direkt in der Funktion.
+- `/sbin/init` ist ein Link auf `/sbin/init.sysvinit`. Ohne `rm` würde `>` dem Link folgen und `init.sysvinit` überschreiben.
+- `init=/bin/false` auf der Kommandozeile geht nicht: Die kommt aus `boot.cmd`, und die ändert kein Update.
+- Im Build zeigt `ls -l …/rootfs/sbin/init` den Stand. `cat` folgt dem absoluten Link auf den PC und meldet „No such file“.
+
+**Mit `BBB_BROKEN = "1"` nur die `.swu` verwenden.** Die `.wic` aus diesem Build ist auf beiden Seiten kaputt. Danach `BBB_BROKEN` wieder aus `local.inc` entfernen und neu bauen.
+
+### Prüfen
+
+Rückfall von Hand, ohne kaputtes Image:
+
+```bash
+fw_setenv ustate 1
+reboot
+```
+
+Bei jedem Start erscheint `Saving Environment to FAT... OK` vor der `A/B:`-Zeile, `ab_count` steigt auf 1, 2, 3. Beim vierten Start:
+
+```
+A/B: ab_count 4 > ab_limit 3, switching to rootpart 3
+```
+
+Danach `ustate=3`, `ab_count=0`, `rootpart=3`. Beim fünften Start wird nicht mehr gezählt und nicht umgeschaltet. `update-confirm` muss für diesen Test aus dem Weg sein, sonst bestätigt es schon beim ersten Start: entweder vor dem Einbau testen oder eine Prüfung `20-fail` mit `exit 1` in `checks.d` legen.
+
+Bestätigung: `fw_setenv ustate 1`, `reboot`. Im Bootlog „All checks passed“, danach `ustate=0`, `ab_count=0`. Mit `20-fail` bleibt `ustate=1`, und `ab_count` steigt.
+
+Echter Ablauf über den Browser:
+
+| Update | Ergebnis |
+| --- | --- |
+| gutes Image | Neustart von selbst, neue Seite, `ustate=0` nach dem Start |
+| zweites Update vor der Bestätigung | abgelehnt, `ustate=1` bleibt |
+| `BBB_BROKEN = "1"` | Panic, Neustart nach 5 Sekunden, nach drei Versuchen alte Seite mit `ustate=3` |
+
+### Grenzen dieses Aufbaus
+
+- Bestätigt wird schon, wenn Linux bis zum Login kommt. Weitere Prüfungen kommen mit den Diensten.
+- Ein hängendes Programm im User-Space führt nicht zum Neustart. Dafür fehlt ein Dienst, der `/dev/watchdog` bedient.
+- `ustate=3` bleibt stehen, bis jemand es zurücksetzt. Es wird nirgends gemeldet.
+- `boot.cmd` und die U-Boot-Programme ändert kein Update. Änderungen daran brauchen eine neu beschriebene Karte bzw. das Kopieren ins eMMC.
 
 ## Quellen
 
