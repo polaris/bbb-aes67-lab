@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ "$(fw_printenv -n ustate 2>/dev/null)" = "1" ]; then
+    echo "Update under test (ustate=1): confirm or reboot before the next update" >&2
+    exit 1
+fi
+
+exit 0
